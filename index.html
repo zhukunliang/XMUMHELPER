@@ -1,0 +1,3157 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#09090b">
+<title>XMUM 校园助手</title>
+<style>
+  /* 布局：单列移动优先。顶部三段式状态栏 → 下拉服务大厅 → 课程与签到 → 电费 → 交通 → 紧急热线 → 页脚。固定深色 zinc 主题。 */
+  :root {
+    color-scheme: dark;
+    --bg: #09090b;
+    --fg: #f4f4f5;
+    --muted: #a1a1aa;
+    --card: #18181b;
+    --line: #27272a;
+    --accent: #38bdf8;
+  }
+  html, body { background: var(--bg); color: var(--fg); }
+  body {
+    padding-inline: 16px; padding-block: 16px 28px;
+    -webkit-text-size-adjust: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", "Segoe UI", sans-serif;
+    font-size: 15px;
+  }
+  .tnum { font-variant-numeric: tabular-nums; }
+  input, select, button, textarea { font-family: inherit; }
+  input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible, textarea:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+  @keyframes slideUp { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+  @keyframes dropDown { from { transform: translateY(-10px); opacity: 0; } to { transform: none; opacity: 1; } }
+  .sheet { animation: slideUp .18s ease-out; }
+  .hall { animation: dropDown .2s ease-out; }
+  .bld { cursor: pointer; outline: none; -webkit-tap-highlight-color: transparent; }
+  .bld:active { opacity: .8; }
+  .bld:focus-visible .hit { stroke: #38bdf8; stroke-width: 2; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+</style>
+</head>
+<body>
+
+
+<div id="root"></div>
+
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+
+/* ------------------------------ 常量 ------------------------------ */
+const MOODLE_HOME = "https://linc.xmu.edu.my/moodle/";
+const DEFAULT_ELECTRICITY_URL = "https://www.xmu.edu.my";
+const DEFAULT_ASKA_URL = "https://app.xmu.edu.my/AskA/";
+const GITHUB_URL = "https://github.com";
+const BILLER_CODE = "44078";
+const TNG_SCHEME = "tngdwallet://";
+const MAINT_URL = "https://app.xmu.edu.my/maintenance";
+const MAINT_DIAL = "+60173135947";
+const MAINT_SHOW = "+6017-3135947";
+const MAINT_SHORT = "017-3135947";
+const MAPS_URL = "https://www.google.com/maps/search/?api=1&query=Xiamen+University+Malaysia";
+const WEATHER_URL = "https://www.google.com/search?q=Salak+Tinggi+weather";
+const AQI_URL = "https://www.google.com/search?q=Salak+Tinggi+air+quality+index";
+
+const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
+
+const SAMPLE_COURSES = [
+  { id: "s1", day: 1, start: "08:30", end: "10:30", name: "数据结构", room: "A2-301", attendUrl: "", moodleUrl: "" },
+  { id: "s2", day: 1, start: "14:00", end: "16:00", name: "高等数学 II", room: "A1-204", attendUrl: "", moodleUrl: "" },
+  { id: "s3", day: 3, start: "09:00", end: "11:00", name: "学术英语", room: "A3-105", attendUrl: "", moodleUrl: "" },
+];
+
+/* 环境数据为示例值：网页沙箱无法联网获取实时天气 */
+const SAMPLE_ENV = { temp: 31, cond: "雷阵雨", pop: 60, aqi: 42 };
+
+function every(startH, startM, endH, endM, step) {
+  const out = [];
+  for (let t = startH * 60 + startM; t <= endH * 60 + endM; t += step) {
+    out.push(String(Math.floor(t / 60)).padStart(2, "0") + ":" + String(t % 60).padStart(2, "0"));
+  }
+  return out;
+}
+
+/* 内置示例时间表，请以校方与 ERL 最新公告为准 */
+const SHUTTLE_WEEKDAY = ["07:30", "08:00", "08:30", "09:00", "10:00", "12:00", "13:00", "15:00", "17:00", "18:00", "19:30", "21:00", "22:00"];
+const SHUTTLE_WEEKEND = ["09:00", "11:00", "14:00", "17:00", "20:00", "22:00"];
+const ERL_WEEKDAY = every(5, 30, 23, 30, 30);
+const ERL_WEEKEND = every(6, 0, 23, 30, 45);
+const shuttleFor = (dow) => (dow === 0 || dow === 6 ? SHUTTLE_WEEKEND : SHUTTLE_WEEKDAY);
+const erlFor = (dow) => (dow === 0 || dow === 6 ? ERL_WEEKEND : ERL_WEEKDAY);
+
+/* ------------------------------ 工具函数 ------------------------------ */
+const pad = (n) => String(n).padStart(2, "0");
+const toMin = (hhmm) => { const p = hhmm.split(":"); return parseInt(p[0], 10) * 60 + parseInt(p[1], 10); };
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+function fmtDur(mins) {
+  mins = Math.max(0, Math.round(mins));
+  const d = Math.floor(mins / 1440);
+  const h = Math.floor((mins % 1440) / 60);
+  const m = mins % 60;
+  if (d > 0) return d + "天" + h + "小时";
+  if (h > 0) return h + "小时" + (m ? m + "分钟" : "");
+  return m < 1 ? "不到1分钟" : m + "分钟";
+}
+
+function normalizeUrl(raw) {
+  const s = (raw || "").trim();
+  if (!s) return "";
+  if (/^https?:\/\//i.test(s)) return s;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(s)) return "";
+  return "https://" + s;
+}
+
+function telHref(raw) {
+  const s = (raw || "").trim();
+  const digits = s.replace(/\D/g, "");
+  if (digits.length < 7 || /[xX]/.test(s)) return "";
+  return "tel:" + (s.charAt(0) === "+" ? "+" : "") + digits;
+}
+
+function useLocalState(key, initial) {
+  const [value, setValue] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem(key);
+      return raw !== null ? JSON.parse(raw) : initial;
+    } catch (e) { return initial; }
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
+  }, [key, value]);
+  return [value, setValue];
+}
+
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) {}
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    ta.style.top = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) { return false; }
+}
+
+/* 复制反馈：返回 [已复制的 key, 触发复制函数] */
+function useCopy() {
+  const [copiedKey, setCopiedKey] = useState("");
+  const timer = useRef(null);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  const copy = async (key, text) => {
+    const ok = await copyText(text);
+    if (ok) {
+      setCopiedKey(key);
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => setCopiedKey(""), 1800);
+    }
+    return ok;
+  };
+  return [copiedKey, copy];
+}
+
+function upcoming(getSched, now, count) {
+  const out = [];
+  for (let off = 0; off < 3 && out.length < count; off++) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + off);
+    const sched = getSched(d.getDay());
+    for (let i = 0; i < sched.length; i++) {
+      const p = sched[i].split(":");
+      const dep = new Date(d.getFullYear(), d.getMonth(), d.getDate(), parseInt(p[0], 10), parseInt(p[1], 10), 0);
+      if (dep > now) out.push({ t: sched[i], secs: Math.floor((dep - now) / 1000), off: off });
+      if (out.length >= count) break;
+    }
+  }
+  return out;
+}
+
+function aqiLevel(v) {
+  if (v <= 50) return { label: "优", dot: "bg-emerald-400", text: "text-emerald-300" };
+  if (v <= 100) return { label: "良", dot: "bg-yellow-400", text: "text-yellow-300" };
+  if (v <= 150) return { label: "轻度污染", dot: "bg-orange-400", text: "text-orange-300" };
+  return { label: "中度以上", dot: "bg-red-400", text: "text-red-300" };
+}
+
+
+/* ------------------------------ 校历：202609 学期（周次计算 + 周次过滤 + 本地微调） ------------------------------ */
+/* 依据马校本科校历：September Semester 25 Sep 2026 – 21 Jan 2027；Week 1 从 28 Sep（周一）开始，共 14 个教学周，
+   4–10 Jan 复习周，11–21 Jan 考试周。该学期校历上没有期中假期，所以默认不设放假周，可在“校历设置”里手动添加。 */
+const CAL_DEFAULT = { semester: "202609", start: "2026-09-28", recessFrom: "", recessTo: "", teachEnd: "2027-01-03" };
+const CAL_HOLIDAYS = {
+  "2026-11-08": "Deepavali", "2026-11-09": "Deepavali", "2026-12-11": "雪兰莪苏丹华诞",
+  "2026-12-25": "圣诞节", "2027-01-01": "元旦",
+};
+
+function parseYmd(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || "");
+  if (!m) return null;
+  const d = new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+  return isNaN(d.getTime()) ? null : d;
+}
+function ymdOf(d) {
+  return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+}
+function daysBetween(a, b) {
+  const da = new Date(a.getFullYear(), a.getMonth(), a.getDate());
+  const db = new Date(b.getFullYear(), b.getMonth(), b.getDate());
+  return Math.round((db.getTime() - da.getTime()) / 86400000);
+}
+
+/* 返回 { phase: unset | before | teaching | recess | after, week, holiday, days } */
+function academicInfo(cal, date) {
+  const start = parseYmd(cal.start);
+  if (!start) return { phase: "unset" };
+  const diff = daysBetween(start, date);
+  if (diff < 0) return { phase: "before", days: -diff };
+  const end = parseYmd(cal.teachEnd);
+  if (end && daysBetween(end, date) > 0) return { phase: "after" };
+  const rf = parseYmd(cal.recessFrom);
+  const rt = parseYmd(cal.recessTo);
+  const hasRecess = !!(rf && rt && daysBetween(rf, rt) >= 0);
+  if (hasRecess && daysBetween(rf, date) >= 0 && daysBetween(date, rt) >= 0) return { phase: "recess" };
+  let week = Math.floor(diff / 7) + 1;
+  if (hasRecess && daysBetween(rt, date) > 0) week -= Math.ceil((daysBetween(rf, rt) + 1) / 7);
+  return { phase: "teaching", week: week, holiday: CAL_HOLIDAYS[ymdOf(date)] || "" };
+}
+
+/* "1-7" / "1-7, 9-14" / "Weeks 1-14" → 该周是否上课；没写周次视为每周都有 */
+function weeksInclude(weeks, wk) {
+  const s = String(weeks || "");
+  if (!/\d/.test(s)) return true;
+  const re = /(\d+)\s*(?:[-–—~]|to)\s*(\d+)|(\d+)/gi;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    if (m[3]) { if (parseInt(m[3], 10) === wk) return true; }
+    else if (wk >= parseInt(m[1], 10) && wk <= parseInt(m[2], 10)) return true;
+  }
+  return false;
+}
+
+function courseOn(c, date, cal) {
+  const info = academicInfo(cal, date);
+  if (info.phase === "unset") return true;
+  if (info.phase !== "teaching") return false;
+  if (info.holiday) return false;
+  return weeksInclude(c.weeks, info.week);
+}
+
+function getCourseStatus(courses, now, cal) {
+  const nowMin = now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60;
+  for (let off = 0; off < 16; off++) {
+    const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() + off);
+    const list = courses
+      .filter((c) => c.day === date.getDay() && (!cal || courseOn(c, date, cal)))
+      .sort((a, b) => toMin(a.start) - toMin(b.start));
+    if (off === 0) {
+      const cur = list.find((c) => toMin(c.start) <= nowMin && nowMin < toMin(c.end));
+      if (cur) return { kind: "now", course: cur, off: 0, mins: toMin(cur.end) - nowMin };
+      const nxt = list.find((c) => toMin(c.start) > nowMin);
+      if (nxt) return { kind: "next", course: nxt, off: 0, mins: toMin(nxt.start) - nowMin };
+    } else if (list.length) {
+      const c = list[0];
+      return { kind: "next", course: c, off: off, mins: off * 1440 + toMin(c.start) - nowMin };
+    }
+  }
+  return null;
+}
+
+function CalendarModal({ cal, setCal, now, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  const set = (k, v) => setCal({ ...cal, [k]: v });
+  const st = parseYmd(cal.start);
+  const info = academicInfo(cal, now);
+  const notMonday = st && st.getDay() !== 1;
+  const preview = info.phase === "teaching" ? "按当前设置，今天是第 " + info.week + " 教学周"
+    : info.phase === "recess" ? "按当前设置，今天处在放假周"
+    : info.phase === "before" ? "按当前设置，学期还没开始（" + info.days + " 天后）"
+    : info.phase === "after" ? "按当前设置，教学周已结束" : "还没有设置开学首日";
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center" role="dialog" aria-modal="true" aria-label="校历设置">
+      <button type="button" aria-label="关闭" onClick={onClose} className="absolute inset-0 bg-black/70" />
+      <div className="sheet relative z-10 flex max-h-[92%] w-full max-w-xl flex-col overflow-hidden rounded-t-2xl border border-zinc-800 bg-zinc-900 sm:rounded-2xl"
+        style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
+        <div className="flex items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
+          <h2 className="text-base font-semibold text-zinc-50">⚙️ 校历设置</h2>
+          <button type="button" onClick={onClose} aria-label="关闭"
+            className="flex h-10 w-10 items-center justify-center rounded-lg border border-zinc-700 text-zinc-200 active:bg-zinc-800"><I.X size={18} /></button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+          <p className="rounded-lg border border-sky-400/30 bg-sky-400/5 px-3 py-2 text-xs leading-relaxed text-sky-100">
+            默认是 202609 学期：Week 1 从 2026-09-28（周一）开始，教学周共 14 周，4–10 Jan 复习周、11–21 Jan 考试周。校历如有调整，或新学期开始时，在这里改开学首日即可，只保存在本机。
+          </p>
+          <div className="mt-3 flex flex-col gap-3">
+            <div>
+              <label htmlFor="cal-sem" className={labelCls}>学期代号</label>
+              <input id="cal-sem" type="text" value={cal.semester} maxLength={12} onChange={(e) => set("semester", e.target.value)} className={inputCls} placeholder="例如 202609" />
+            </div>
+            <div>
+              <label htmlFor="cal-start" className={labelCls}>开学首日（Week 1 的周一）</label>
+              <input id="cal-start" type="date" value={cal.start} onChange={(e) => set("start", e.target.value)} className={inputCls} />
+              {notMonday && <p className="mt-1 text-xs text-amber-300" role="alert">这一天不是周一，周次会从这一天起每 7 天算一周，建议改成周一。</p>}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="cal-rf" className={labelCls}>放假开始（可不填）</label>
+                <input id="cal-rf" type="date" value={cal.recessFrom} onChange={(e) => set("recessFrom", e.target.value)} className={inputCls} />
+              </div>
+              <div>
+                <label htmlFor="cal-rt" className={labelCls}>放假结束</label>
+                <input id="cal-rt" type="date" value={cal.recessTo} onChange={(e) => set("recessTo", e.target.value)} className={inputCls} />
+              </div>
+            </div>
+            <p className="-mt-1 text-xs text-zinc-400">放假周内常规课程暂停，放假周不计入教学周次。该学期校历没有期中假期，所以默认留空。</p>
+            <div>
+              <label htmlFor="cal-end" className={labelCls}>教学周最后一天（之后进入复习/考试周）</label>
+              <input id="cal-end" type="date" value={cal.teachEnd} onChange={(e) => set("teachEnd", e.target.value)} className={inputCls} />
+            </div>
+          </div>
+          <p className="mt-3 text-sm font-semibold text-zinc-100" aria-live="polite">{preview}</p>
+          <div className="mt-4 grid grid-cols-2 gap-2.5">
+            <button type="button" onClick={() => setCal({ ...CAL_DEFAULT })}
+              className="min-h-[44px] rounded-xl border border-zinc-700 px-3 py-2 text-sm text-zinc-200 active:bg-zinc-800">恢复 202609 默认</button>
+            <button type="button" onClick={onClose}
+              className="min-h-[44px] rounded-xl bg-sky-400 px-3 py-2 text-sm font-semibold text-zinc-950 active:bg-sky-300">完成</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+/* ------------------------------ 课表文本解析（纯前端正则） ------------------------------ */
+const DAY_SRC = "(?:周|星期|礼拜)([一二三四五六日天])|\\b(mon(?:day)?|tues?(?:day)?|wed(?:nesday)?|thu(?:rs?(?:day)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\\b";
+const TIME_SRC = "(\\d{1,2}):(\\d{2})\\s*([ap]\\.?m\\.?)?\\s*(?:[-–—~～至到]|to)\\s*(\\d{1,2}):(\\d{2})\\s*([ap]\\.?m\\.?)?";
+const CN_DAY = { "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "日": 0, "天": 0 };
+const EN_DAY = { mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6, sun: 0 };
+
+function to24(h, m, ap) {
+  h = parseInt(h, 10); m = parseInt(m, 10);
+  if (ap) {
+    const pm = ap.toLowerCase().charAt(0) === "p";
+    h = (h % 12) + (pm ? 12 : 0);
+  }
+  if (h > 23 || m > 59) return null;
+  return pad(h) + ":" + pad(m);
+}
+
+function cleanName(s) {
+  let t = s
+    .replace(/[\(\[（【][^\)\]）】]*[\)\]）】]/g, " ")
+    .replace(/^\s*\d+[.)、]\s*/, "")
+    .replace(/[|,;，；、\/\t]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^[\s\-–:：.]+|[\s\-–:：.]+$/g, "");
+  if (t.length < 2 || /^[\d\s:.\-]+$/.test(t)) return "";
+  return t.slice(0, 40);
+}
+
+/* 清洗：去 HTML 标签、实体、缴费状态栏、学期编号，保留换行 */
+const STATUS_RE = /(已缴费|未缴费|待缴费|缴费状态|已付款|未付款|\bun-?paid\b|\bpaid\b|payment\s*status|fee\s*status|\bpending\b|\bsettled\b)/gi;
+const CODE_RE = /\b[A-Za-z]{2,4}\s?\d{3,4}[A-Za-z]?\b/;
+function prepText(raw) {
+  let t = String(raw == null ? "" : raw);
+  t = t.replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ");
+  t = t.replace(/<\s*(br|\/tr|\/p|\/div|\/li|\/h\d|\/table)\b[^>]*>/gi, "\n");
+  t = t.replace(/<[^>]*>/g, " ");
+  t = t.replace(/&nbsp;|&#160;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&#?\w+;/g, " ");
+  t = t.replace(/[ 　]/g, " ");
+  t = t.replace(STATUS_RE, " ");
+  t = t.replace(/(?:Semester|学期)\s*[:：]?\s*\d{4,6}/gi, " ").replace(/\b20\d{2}(?:0[1-9]|1[0-2])\b/g, " ");
+  return t;
+}
+
+function parseTimetable(text) {
+  const out = [];
+  const skipped = [];
+  try {
+    const lines = prepText(text).split(/\r?\n/).map((l, i) => ({ n: i + 1, t: l.trim() })).filter((x) => x.t);
+    const seen = {};
+    let lastName = "";
+    let lastDay = null;
+
+    lines.forEach(({ n, t: raw }) => {
+      try {
+        /* 0830-1030 / 0830 - 1020 这类四位数写法（分钟限定 00/05…55，避免误伤年份） */
+        const line = raw.replace(/(^|\D)(\d{2})(\d{2})\s*([-–—~～至到]|to)\s*(\d{2})(\d{2})(?!\d)/gi, (m0, pre, h1, m1, sep, h2, m2) => {
+          if (+h1 > 23 || +h2 > 23 || +m1 > 59 || +m2 > 59 || +m1 % 5 || +m2 % 5) return m0;
+          return pre + h1 + ":" + m1 + " - " + h2 + ":" + m2;
+        });
+
+        const times = [];
+        const tre = new RegExp(TIME_SRC, "gi");
+        let tm;
+        while ((tm = tre.exec(line)) !== null) {
+          let sAp = tm[3], eAp = tm[6];
+          if (!sAp && eAp) {
+            sAp = eAp;
+            const sh = parseInt(tm[1], 10) % 12, eh = parseInt(tm[4], 10) % 12;
+            if (sh > eh) sAp = eAp.toLowerCase().charAt(0) === "p" ? "am" : "pm";
+          }
+          times.push({ idx: tm.index, end: tm.index + tm[0].length, start: to24(tm[1], tm[2], sAp), endT: to24(tm[4], tm[5], eAp) });
+          if (tm[0].length === 0) tre.lastIndex++;
+        }
+
+        const days = [];
+        const dre = new RegExp(DAY_SRC, "gi");
+        let dm;
+        while ((dm = dre.exec(line)) !== null) {
+          const d = dm[1] ? CN_DAY[dm[1]] : EN_DAY[dm[2].toLowerCase().slice(0, 3)];
+          days.push({ idx: dm.index, end: dm.index + dm[0].length, day: d, used: false });
+          if (dm[0].length === 0) dre.lastIndex++;
+        }
+
+        /* 去掉时间与星期后剩下的就是课程名（含课程代码） */
+        let rest = line;
+        times.slice().reverse().forEach((x) => { rest = rest.slice(0, x.idx) + " " + rest.slice(x.end); });
+        days.forEach(() => { rest = rest.replace(new RegExp(DAY_SRC, "i"), " "); });
+        let nameHere = cleanName(rest);
+        const cm = rest.match(CODE_RE);
+        if (!nameHere && cm) nameHere = cm[0].replace(/\s+/g, "").toUpperCase();
+
+        if (times.length === 0) {
+          if (days.length) lastDay = days.map((d) => d.day);
+          if (nameHere && (cm || !days.length)) lastName = nameHere;
+          return;
+        }
+
+        const name = nameHere || lastName;
+        if (!name) { skipped.push({ n: n, text: raw.slice(0, 40), reason: "没认出课程名" }); return; }
+        if (days.length === 0 && lastDay) { days.push(...lastDay.map((d) => ({ idx: 0, end: 0, day: d, used: false }))); lastDay = null; }
+        if (days.length === 0) { skipped.push({ n: n, text: raw.slice(0, 40), reason: "没认出星期" }); return; }
+        let prevEnd = 0;
+        let added = false;
+        times.forEach((t, k) => {
+          const nextIdx = k + 1 < times.length ? times[k + 1].idx : line.length;
+          let pick = days.filter((d) => !d.used && d.idx >= prevEnd && d.idx < t.idx);
+          if (pick.length === 0) pick = days.filter((d) => !d.used && d.idx >= t.end && d.idx < nextIdx);
+          if (pick.length === 0) pick = days.filter((d) => !d.used);
+          if (pick.length === 0) pick = days;
+          pick.forEach((d) => { d.used = true; });
+          prevEnd = t.end;
+          if (!t.start || !t.endT || toMin(t.endT) - toMin(t.start) < 20) return;
+          pick.forEach((d) => {
+            const key = name + "|" + d.day + "|" + t.start + "|" + t.endT;
+            if (seen[key]) { added = true; return; }
+            seen[key] = true;
+            added = true;
+            out.push({ name: name, day: d.day, start: t.start, end: t.endT });
+          });
+        });
+        if (!added) skipped.push({ n: n, text: raw.slice(0, 40), reason: "时间不合法" });
+        if (nameHere) lastName = nameHere;
+      } catch (e) {
+        console.log("[XMUM 课表] 第 " + n + " 行解析异常", e);
+        skipped.push({ n: n, text: raw.slice(0, 40), reason: "解析异常" });
+      }
+    });
+  } catch (e) {
+    console.log("[XMUM 课表] 解析失败", e);
+    skipped.push({ n: 0, text: "", reason: "整体解析异常" });
+  }
+  out.skipped = skipped;
+  return out;
+}
+
+/* ------------------------------ 教务课表 HTML 解析（原生 FileReader + DOMParser） ------------------------------ */
+function timeFromMatch(tm) {
+  let sAp = tm[3], eAp = tm[6];
+  if (!sAp && eAp) {
+    sAp = eAp;
+    const sh = parseInt(tm[1], 10) % 12, eh = parseInt(tm[4], 10) % 12;
+    if (sh > eh) sAp = eAp.toLowerCase().charAt(0) === "p" ? "am" : "pm";
+  }
+  const s = to24(tm[1], tm[2], sAp);
+  const e = to24(tm[4], tm[5], eAp);
+  if (!s || !e || toMin(e) <= toMin(s)) return null;
+  return { start: s, end: e };
+}
+
+function cellText(el) {
+  const doc = el.ownerDocument;
+  const c = el.cloneNode(true);
+  const brs = c.querySelectorAll("br");
+  for (let i = 0; i < brs.length; i++) brs[i].parentNode.replaceChild(doc.createTextNode("\n"), brs[i]);
+  const blocks = c.querySelectorAll("div,p,li");
+  for (let i = 0; i < blocks.length; i++) blocks[i].appendChild(doc.createTextNode("\n"));
+  return (c.textContent || "").replace(/ /g, " ").replace(/[ \t\r]+/g, " ").replace(/ *\n[\s]*/g, "\n").trim();
+}
+
+function tableMatrix(table) {
+  const m = [];
+  const rows = table.rows;
+  for (let r = 0; r < rows.length; r++) {
+    if (!m[r]) m[r] = [];
+    let c = 0;
+    const cells = rows[r].cells;
+    for (let k = 0; k < cells.length; k++) {
+      while (m[r][c]) c++;
+      const el = cells[k];
+      const rs = Math.min(30, Math.max(1, el.rowSpan || 1));
+      const cs = Math.min(30, Math.max(1, el.colSpan || 1));
+      const cell = { text: cellText(el), r0: r, c0: c, rs: rs };
+      for (let dr = 0; dr < rs && r + dr < rows.length; dr++) {
+        if (!m[r + dr]) m[r + dr] = [];
+        for (let dc = 0; dc < cs; dc++) m[r + dr][c + dc] = cell;
+      }
+      c += cs;
+    }
+  }
+  return m;
+}
+
+function dayFromLabel(text) {
+  const first = (text || "").split("\n")[0].trim();
+  if (!first || first.length > 14) return -1;
+  const mm = /^(?:(?:周|星期|礼拜)([一二三四五六日天])|(mon|tue|wed|thu|fri|sat|sun)[a-z]*)/i.exec(first);
+  if (!mm) return -1;
+  return mm[1] ? CN_DAY[mm[1]] : EN_DAY[mm[2].toLowerCase()];
+}
+
+function isRoomToken(t) {
+  return /^[A-Za-z]{1,3}\d{0,2}-\d{2,4}[A-Za-z]?$/.test(t) || /^(?:LT|Lab|LAB)\d+$/.test(t);
+}
+
+/* 从一行文字里拆出课程名与教室 */
+function splitNameRoom(line) {
+  let room = "";
+  const lab = /(?:教室|地点|Room|Venue|Location)\s*[:：]?\s*([^\s,;，；]+)/i.exec(line);
+  let rest = line;
+  if (lab) { room = lab[1]; rest = line.replace(lab[0], " "); }
+  else {
+    const lt = /\b(?:Lab|LT)\s?\d+\b/i.exec(line);
+    if (lt) { room = lt[0]; rest = line.replace(lt[0], " "); }
+  }
+  const toks = rest.split(/\s+/).filter(Boolean);
+  const kept = [];
+  toks.forEach((t) => {
+    if (!room && isRoomToken(t)) room = t;
+    else if (t !== room) kept.push(t);
+  });
+  return { name: cleanName(kept.join(" ")), room: room };
+}
+
+function gridSlots(m) {
+  let hdr = -1;
+  let dayCols = {};
+  for (let r = 0; r < Math.min(m.length, 6); r++) {
+    const row = m[r] || [];
+    const found = {};
+    let n = 0;
+    for (let c = 0; c < row.length; c++) {
+      if (!row[c]) continue;
+      const d = dayFromLabel(row[c].text);
+      if (d >= 0) { found[c] = d; n++; }
+    }
+    if (n >= 3) { hdr = r; dayCols = found; break; }
+  }
+  if (hdr < 0) return null;
+
+  const cols = Object.keys(dayCols).map(Number);
+  const firstDayCol = Math.min.apply(null, cols);
+  const rowTime = (row) => {
+    for (let c = 0; c < firstDayCol; c++) {
+      if (!row || !row[c]) continue;
+      const tm = new RegExp(TIME_SRC, "i").exec(row[c].text);
+      if (tm) { const t = timeFromMatch(tm); if (t) return t; }
+    }
+    return null;
+  };
+
+  const out = [];
+  const done = [];
+  for (let r = hdr + 1; r < m.length; r++) {
+    const row = m[r] || [];
+    cols.forEach((c) => {
+      const cell = row[c];
+      if (!cell || !cell.text || done.indexOf(cell) >= 0) return;
+      done.push(cell);
+      let t = null;
+      const own = new RegExp(TIME_SRC, "i").exec(cell.text);
+      if (own) t = timeFromMatch(own);
+      if (!t) {
+        const t0 = rowTime(m[cell.r0]);
+        const t1 = rowTime(m[Math.min(cell.r0 + cell.rs - 1, m.length - 1)]);
+        if (t0 && t1 && toMin(t1.end) > toMin(t0.start)) t = { start: t0.start, end: t1.end };
+      }
+      if (!t) return;
+      const lines = cell.text.split("\n").map((l) => l.replace(new RegExp(TIME_SRC, "gi"), " ").trim()).filter(Boolean);
+      let name = "", room = "";
+      lines.forEach((ln) => {
+        const sp = splitNameRoom(ln);
+        if (!room && sp.room) room = sp.room;
+        if (!name && sp.name) name = sp.name;
+      });
+      if (!name) return;
+      out.push({ name: name, day: dayCols[c], start: t.start, end: t.end, room: room });
+    });
+  }
+  return out;
+}
+
+function listSlots(m) {
+  const KW = {
+    name: /课程|科目|course|subject|module/i,
+    day: /星期|周几|day/i,
+    time: /时间|节次|time|period|schedule/i,
+    room: /教室|地点|room|venue|location/i,
+  };
+  let hdr = -1;
+  let idx = {};
+  for (let r = 0; r < Math.min(m.length, 5); r++) {
+    const row = m[r] || [];
+    const found = {};
+    let n = 0;
+    for (let c = 0; c < row.length; c++) {
+      if (!row[c] || row[c].text.length > 20) continue;
+      ["name", "day", "time", "room"].forEach((k) => {
+        if (found[k] === undefined && KW[k].test(row[c].text)) { found[k] = c; n++; }
+      });
+    }
+    if (found.name !== undefined && n >= 2) { hdr = r; idx = found; break; }
+  }
+  if (hdr < 0) return null;
+
+  const out = [];
+  for (let r = hdr + 1; r < m.length; r++) {
+    const row = m[r] || [];
+    const get = (k) => (idx[k] !== undefined && row[idx[k]] ? row[idx[k]].text.replace(/\n/g, " ") : "");
+    const nm = cleanName(get("name"));
+    if (!nm) continue;
+    const slots = parseTimetable("课程 " + get("day") + " " + get("time"));
+    const room = get("room").split(/\s+/)[0] || "";
+    slots.forEach((s) => out.push({ name: nm, day: s.day, start: s.start, end: s.end, room: room }));
+  }
+  return out;
+}
+
+function rowFallback(m) {
+  const out = [];
+  m.forEach((row) => {
+    if (!row) return;
+    const seen = [];
+    const parts = [];
+    row.forEach((cell) => {
+      if (cell && seen.indexOf(cell) < 0) { seen.push(cell); parts.push(cell.text.replace(/\n/g, " ")); }
+    });
+    parseTimetable(parts.join("  ")).forEach((s) => {
+      const sp = splitNameRoom(s.name);
+      out.push({ name: sp.name || s.name, day: s.day, start: s.start, end: s.end, room: sp.room });
+    });
+  });
+  return out;
+}
+
+function bodyText(doc) {
+  const body = doc.body;
+  if (!body) return "";
+  const brs = body.querySelectorAll("br");
+  for (let i = 0; i < brs.length; i++) brs[i].parentNode.replaceChild(doc.createTextNode("\n"), brs[i]);
+  const blocks = body.querySelectorAll("p,div,tr,li,h1,h2,h3,h4,h5,h6");
+  for (let i = 0; i < blocks.length; i++) blocks[i].appendChild(doc.createTextNode("\n"));
+  const cells = body.querySelectorAll("td,th");
+  for (let i = 0; i < cells.length; i++) cells[i].appendChild(doc.createTextNode("  "));
+  return body.textContent || "";
+}
+
+/* ---- 厦大马校课表页（table.data：表头 Time + Monday…Sunday；时间列 "9.00am-10.00am"；课程格 td.row_kb 带 rowspan，内容用 <br> 分行） ---- */
+const SLOT_RE_SRC = "(\\d{1,2})[.:](\\d{2})\\s*([ap]\\.?m\\.?)?\\s*(?:[-–—~～至到]|to)\\s*(\\d{1,2})[.:](\\d{2})\\s*([ap]\\.?m\\.?)?";
+const COURSE_CODE_RE = /^[A-Za-z]{1,6}\s?\d{2,5}[A-Za-z]?$/;
+const DAY_NAMES = ["日", "一", "二", "三", "四", "五", "六"];
+
+function snippet(t) {
+  return String(t || "").replace(/\s+/g, " ").slice(0, 60);
+}
+
+function kbFromMatrix(m, diag) {
+  let hdr = -1;
+  let dayCols = {};
+  for (let r = 0; r < Math.min(m.length, 6); r++) {
+    const row = m[r] || [];
+    const found = {};
+    let n = 0;
+    for (let c = 0; c < row.length; c++) {
+      if (!row[c]) continue;
+      const d = dayFromLabel(row[c].text);
+      if (d >= 0) { found[c] = d; n++; }
+    }
+    if (n >= 3) { hdr = r; dayCols = found; break; }
+  }
+  if (hdr < 0) return null;
+  const cols = Object.keys(dayCols).map(Number);
+  const firstDayCol = Math.min.apply(null, cols);
+
+  const slotOf = (row) => {
+    if (!row) return null;
+    for (let c = 0; c < firstDayCol; c++) {
+      if (!row[c]) continue;
+      const tm = new RegExp(SLOT_RE_SRC, "i").exec(row[c].text);
+      if (tm) { const t = timeFromMatch(tm); if (t) return t; }
+    }
+    return null;
+  };
+  let slotRows = 0;
+  for (let r = hdr + 1; r < m.length; r++) if (slotOf(m[r])) slotRows++;
+  if (slotRows < 2) return null;
+
+  const out = [];
+  const done = [];
+  for (let r = hdr + 1; r < m.length; r++) {
+    const row = m[r] || [];
+    cols.forEach((c) => {
+      const cell = row[c];
+      if (!cell || done.indexOf(cell) >= 0) return;
+      done.push(cell);
+      const text = (cell.text || "").trim();
+      if (!text) return;
+      const where = "第 " + (cell.r0 + 1) + " 行 · 周" + DAY_NAMES[dayCols[c]] + " 列";
+      const t0 = slotOf(m[cell.r0]);
+      const t1 = slotOf(m[Math.min(cell.r0 + cell.rs - 1, m.length - 1)]);
+      if (!t0 || !t1 || toMin(t1.end) <= toMin(t0.start)) {
+        diag.push(where + "：找不到这门课对应的时间段（片段：" + snippet(text) + "）");
+        return;
+      }
+      const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+      let code = "", room = "", weeks = "";
+      const rest = [];
+      lines.forEach((ln) => {
+        if (/^\(?\s*weeks?\b/i.test(ln)) { weeks = ln.replace(/^\(?\s*weeks?\s*/i, "").replace(/\)\s*$/, "").trim(); return; }
+        if (!room && ln.indexOf("#") >= 0) { room = ln; return; }
+        if (!code && COURSE_CODE_RE.test(ln)) { code = ln; return; }
+        rest.push(ln);
+      });
+      const name = (code + " " + (rest[0] || "")).trim();
+      if (!name) {
+        diag.push(where + "：没有读到课程名称（片段：" + snippet(text) + "）");
+        return;
+      }
+      if (!room) diag.push(where + "：「" + name + "」没有找到教室（片段：" + snippet(text) + "），已留空。");
+      out.push({ name: name, day: dayCols[c], start: t0.start, end: t1.end, room: room, weeks: weeks, teacher: rest[1] || "" });
+    });
+  }
+  return out;
+}
+
+function parseTimetableHtml(html) {
+  const diag = [];
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const junk = doc.querySelectorAll("script,style,noscript");
+  for (let i = 0; i < junk.length; i++) junk[i].parentNode.removeChild(junk[i]);
+
+  let items = [];
+  let strategy = "";
+  const tables = doc.querySelectorAll("table");
+  console.log("[XMUM 课表] 页面中共有 " + tables.length + " 张表格；带 row_kb 的课程格：" + doc.querySelectorAll("td.row_kb").length);
+
+  for (let i = 0; i < tables.length && !strategy; i++) {
+    const t = tables[i];
+    if (t.querySelector("table")) continue;
+    try {
+      const got = kbFromMatrix(tableMatrix(t), diag);
+      if (got && got.length) { items = got; strategy = "XMUM 课表表格（第 " + (i + 1) + " 张）"; }
+    } catch (err) {
+      diag.push("第 " + (i + 1) + " 张表格解析出错：" + (err && err.message ? err.message : err));
+      console.log("[XMUM 课表] 表格解析异常", err);
+    }
+  }
+
+  if (!strategy) {
+    for (let i = 0; i < tables.length; i++) {
+      const t = tables[i];
+      if (t.querySelector("table")) continue;
+      const m = tableMatrix(t);
+      let got = gridSlots(m);
+      if (got === null) got = listSlots(m);
+      if (got === null) got = rowFallback(m);
+      items = items.concat(got);
+    }
+    if (items.length) strategy = "通用表格识别";
+  }
+  if (items.length === 0) {
+    const txt = bodyText(doc);
+    items = parseTimetable(txt).map((s) => ({ name: s.name, day: s.day, start: s.start, end: s.end, room: "" }));
+    if (items.length) strategy = "纯文本识别";
+    else {
+      diag.push("页面共 " + tables.length + " 张表格，没有找到“星期表头 + 时间列”（Time / Monday … Sunday）。");
+      diag.push("页面文字片段：" + snippet(txt.slice(0, 200)));
+      console.log("[XMUM 课表] 没有识别到课程。页面文本片段：", txt.replace(/\s+/g, " ").slice(0, 400));
+    }
+  }
+  const seen = {};
+  const result = items.filter((s) => {
+    const key = s.name + "|" + s.day + "|" + s.start + "|" + s.end + "|" + (s.weeks || "");
+    if (seen[key]) return false;
+    seen[key] = true;
+    return true;
+  });
+  result.diag = diag;
+  console.log("[XMUM 课表] 识别方式：" + (strategy || "无") + "，课程时段：" + result.length, result);
+  if (diag.length) console.log("[XMUM 课表] 需要留意的节点：", diag);
+  return result;
+}
+
+function readHtmlFile(file) {
+  return new Promise((resolve, reject) => {
+    if (file.size > 6 * 1024 * 1024) { reject(new Error("文件超过 6MB，不像是课表页面")); return; }
+    const fr = new FileReader();
+    fr.onerror = () => reject(new Error("读取文件失败，请重试"));
+    fr.onload = () => {
+      try {
+        const buf = fr.result;
+        let text = new TextDecoder("utf-8").decode(buf);
+        const head = text.slice(0, 3000);
+        const bad = (text.match(/\uFFFD/g) || []).length;
+        if (/charset\s*=\s*["']?\s*(gb2312|gbk|gb18030)/i.test(head) || bad > 3) {
+          try { text = new TextDecoder("gb18030").decode(buf); } catch (e) {}
+        }
+        resolve(text);
+      } catch (e) { reject(new Error("无法解码该文件")); }
+    };
+    fr.readAsArrayBuffer(file);
+  });
+}
+
+/* ------------------------------ 图标（Lucide 风格内联 SVG） ------------------------------ */
+const Icon = ({ size = 18, className = "", children }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+    strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">{children}</svg>
+);
+const I = {
+  Zap: (p) => <Icon {...p}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></Icon>,
+  Bus: (p) => <Icon {...p}><path d="M8 6v6" /><path d="M15 6v6" /><path d="M2 12h19.6" /><path d="M18 18h3s.5-1.7.8-2.8c.1-.4.2-.8.2-1.2 0-.4-.1-.8-.2-1.2l-1.4-5C20.1 6.8 19.1 6 18 6H4a2 2 0 0 0-2 2v10h3" /><circle cx="7" cy="18" r="2" /><path d="M9 18h5" /><circle cx="16" cy="18" r="2" /></Icon>,
+  Train: (p) => <Icon {...p}><rect x="4" y="3" width="16" height="16" rx="2" /><path d="M4 11h16" /><path d="M12 3v8" /><circle cx="8" cy="15" r="1" /><circle cx="16" cy="15" r="1" /><path d="m8 19-2 3" /><path d="m18 22-2-3" /></Icon>,
+  Book: (p) => <Icon {...p}><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" /><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" /></Icon>,
+  WifiOff: (p) => <Icon {...p}><path d="M5 12.55a11 11 0 0 1 14.08 0" /><path d="M8.53 16.11a6 6 0 0 1 6.95 0" /><line x1="12" y1="20" x2="12.01" y2="20" /><line x1="2" y1="2" x2="22" y2="22" /></Icon>,
+  Copy: (p) => <Icon {...p}><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></Icon>,
+  Check: (p) => <Icon {...p}><polyline points="20 6 9 17 4 12" /></Icon>,
+  Github: (p) => <Icon {...p}><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4" /><path d="M9 18c-4.51 2-5-2-7-2" /></Icon>,
+  Coffee: (p) => <Icon {...p}><path d="M17 8h1a4 4 0 1 1 0 8h-1" /><path d="M3 8h14v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4Z" /><line x1="6" y1="2" x2="6" y2="4" /><line x1="10" y1="2" x2="10" y2="4" /><line x1="14" y1="2" x2="14" y2="4" /></Icon>,
+  X: (p) => <Icon {...p}><path d="M18 6 6 18" /><path d="m6 6 12 12" /></Icon>,
+  Pencil: (p) => <Icon {...p}><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /></Icon>,
+  Plus: (p) => <Icon {...p}><path d="M5 12h14" /><path d="M12 5v14" /></Icon>,
+  Trash: (p) => <Icon {...p}><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></Icon>,
+  Ext: (p) => <Icon {...p}><path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></Icon>,
+  CloudRain: (p) => <Icon {...p}><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242" /><path d="M16 14v6" /><path d="M8 14v6" /><path d="M12 16v6" /></Icon>,
+  ChevronDown: (p) => <Icon {...p}><polyline points="6 9 12 15 18 9" /></Icon>,
+  ChevronUp: (p) => <Icon {...p}><polyline points="18 15 12 9 6 15" /></Icon>,
+  MapPin: (p) => <Icon {...p}><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" /><circle cx="12" cy="10" r="3" /></Icon>,
+  Wrench: (p) => <Icon {...p}><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" /></Icon>,
+  Phone: (p) => <Icon {...p}><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></Icon>,
+  Shield: (p) => <Icon {...p}><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" /></Icon>,
+  Cross: (p) => <Icon {...p}><path d="M4 9a2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h4v4a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-4h4a2 2 0 0 0 2-2v-2a2 2 0 0 0-2-2h-4V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v4z" /></Icon>,
+};
+
+I.Upload = (p) => <Icon {...p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></Icon>;
+I.Clock = (p) => <Icon {...p}><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></Icon>;
+I.Printer = (p) => <Icon {...p}><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" /><path d="M6 9V3h12v6" /><rect x="6" y="14" width="12" height="8" /></Icon>;
+I.Info = (p) => <Icon {...p}><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></Icon>;
+I.Undo = (p) => <Icon {...p}><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></Icon>;
+I.ChevronLeft = (p) => <Icon {...p}><polyline points="15 18 9 12 15 6" /></Icon>;
+/* ------------------------------ 小组件 ------------------------------ */
+const Card = ({ children, className = "" }) => (
+  <section className={"min-w-0 rounded-2xl border border-zinc-800 bg-zinc-900 p-3.5 " + className}>{children}</section>
+);
+
+const CardTitle = ({ icon, title, tone, right }) => (
+  <div className="mb-3 flex items-center justify-between gap-3">
+    <div className="flex min-w-0 items-center gap-2.5">
+      <span className={"flex h-7 w-7 shrink-0 items-center justify-center rounded-lg " + tone}>{icon}</span>
+      <h2 className="truncate text-base font-semibold tracking-tight text-zinc-50">{title}</h2>
+    </div>
+    {right}
+  </div>
+);
+
+const inputCls = "w-full min-w-0 rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2.5 text-base text-zinc-50 placeholder-zinc-500 outline-none focus:border-sky-400";
+const labelCls = "mb-1.5 block text-xs font-medium tracking-wide text-zinc-400";
+
+/* ------------------------------ 1. 顶部 Header ------------------------------ */
+function Header({ now, online }) {
+  const lv = aqiLevel(SAMPLE_ENV.aqi);
+  return (
+    <header className="mb-3">
+      <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2">
+        <a href={WEATHER_URL} target="_blank" rel="noopener noreferrer" aria-label="雪邦天气，点击查看实时"
+          className="flex min-w-[78px] flex-col rounded-2xl border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 active:bg-zinc-800">
+          <span className="tnum flex items-center gap-1 text-sm font-bold text-zinc-50"><I.CloudRain size={14} className="text-sky-300" />{SAMPLE_ENV.temp}°C</span>
+          <span className="text-[11px] leading-tight text-zinc-300">{SAMPLE_ENV.cond} {SAMPLE_ENV.pop}%</span>
+        </a>
+        <div className="min-w-0 text-center">
+          <h1 className="truncate text-base font-bold leading-tight tracking-tight text-zinc-50">XMUM Helper</h1>
+                    <p className="tnum mt-0.5 text-lg font-semibold leading-none text-sky-300">
+            {pad(now.getHours())}:{pad(now.getMinutes())}<span className="text-sm text-zinc-400">:{pad(now.getSeconds())}</span>
+          </p>
+        </div>
+        <a href={AQI_URL} target="_blank" rel="noopener noreferrer" aria-label="雪邦空气污染指数，点击查看实时"
+          className="flex min-w-[78px] flex-col rounded-2xl border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 active:bg-zinc-800">
+          <span className="tnum flex items-center gap-1.5 text-sm font-bold text-zinc-50"><span className={"h-2 w-2 rounded-full " + lv.dot} />AQI {SAMPLE_ENV.aqi}</span>
+          <span className={"text-[11px] font-semibold leading-tight " + lv.text}>{lv.label}</span>
+        </a>
+      </div>
+      <p className="mt-2 text-center text-[11px] text-zinc-400">
+        {now.getFullYear()}年{now.getMonth() + 1}月{now.getDate()}日 {WEEKDAYS[now.getDay()]}
+      </p>
+      {!online && (
+        <p className="mt-2 flex items-center justify-center gap-1.5 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-xs text-red-300">
+          <I.WifiOff size={13} /> 网络已断开，部分外链暂时无法打开
+        </p>
+      )}
+    </header>
+  );
+}
+
+/* ------------------------------ 2. 我的宿舍号 + 下拉“二楼”：官方报修 · 热线 ------------------------------ */
+const cleanRoom = (s) => (s || "").replace(/\s+/g, "").toUpperCase();
+
+function legacyRoom() {
+  try {
+    for (const k of ["xmum_dorm_room", "xmum_room"]) {
+      const raw = localStorage.getItem(k);
+      if (raw) { const v = JSON.parse(raw); if (typeof v === "string" && v.trim()) return cleanRoom(v); }
+    }
+  } catch (e) { /* 忽略 */ }
+  return "";
+}
+
+function DormBar({ room, setRoom }) {
+  return (
+    <label htmlFor="my-room-input" className="mb-3 flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-1.5">
+      <span className="whitespace-nowrap text-sm font-semibold text-zinc-50">🏠 我的宿舍</span>
+      <input id="my-room-input" type="text" autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false}
+        value={room} onChange={(e) => setRoom(cleanRoom(e.target.value))}
+        className="min-w-0 flex-1 bg-transparent py-1 text-right font-mono text-base text-sky-300 placeholder-zinc-600 outline-none" placeholder="LY3-502" />
+    </label>
+  );
+}
+
+const REPAIR_ISSUES = ["空调漏水", "空调不凉", "灯管不亮", "花洒堵塞", "网络故障"];
+
+const HOTLINES = [
+  { key: "maint", emoji: "🔧", name: "宿管报修", show: "+6017-3135947", dial: "+60173135947", copy: true },
+  { key: "sec", emoji: "👮", name: "校园安保", show: "+6019-3489999", dial: "+60193489999", copy: true },
+  { key: "night", emoji: "🔑", name: "晚间开门/急事", show: "+6013-9176801", dial: "+60139176801", copy: false },
+];
+
+function HotlineRow({ h, copiedKey, copy }) {
+  const done = copiedKey === h.key;
+  return (
+    <li className="flex items-center gap-2.5 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2">
+      <span className="shrink-0 text-xl" aria-hidden="true">{h.emoji}</span>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-xs text-zinc-400">{h.name}</p>
+        <p className="whitespace-nowrap font-mono text-sm font-semibold text-zinc-50">{h.show}</p>
+      </div>
+      {h.copy && (
+        <button type="button" onClick={() => copy(h.key, h.show)} aria-label={"复制 " + h.name}
+          className={"flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border " + (done ? "border-emerald-400 bg-emerald-400 text-zinc-950" : "border-zinc-700 text-zinc-200 active:bg-zinc-800")}>
+          {done ? <I.Check size={16} /> : <I.Copy size={16} />}
+        </button>
+      )}
+      <a href={"tel:" + h.dial} aria-label={"拨打 " + h.name}
+        className="flex h-10 shrink-0 items-center gap-1 whitespace-nowrap rounded-lg bg-emerald-400 px-3 text-sm font-semibold text-zinc-950 active:bg-emerald-300">
+        <I.Phone size={15} /> 拨打
+      </a>
+    </li>
+  );
+}
+
+function ServiceHall({ myRoom }) {
+  const [open, setOpen] = useState(false);
+  const [issue, setIssue] = useState("");
+  const [copiedKey, copy] = useCopy();
+  const touchY = useRef(null);
+
+  const roomT = (myRoom || "").trim();
+  const repairText = (r, i) => "[报修] " + r + " - " + i;
+  const focusRoom = () => {
+    const el = document.getElementById("my-room-input");
+    if (el) { el.scrollIntoView({ block: "center", behavior: "smooth" }); el.focus(); }
+  };
+  const pick = (i) => {
+    if (!roomT) { focusRoom(); return; }
+    setIssue(i);
+    copy("repair", repairText(roomT, i));
+  };
+
+  const onTouchStart = (e) => { touchY.current = e.touches[0].clientY; };
+  const onTouchEnd = (e) => {
+    if (touchY.current === null) return;
+    const dy = e.changedTouches[0].clientY - touchY.current;
+    touchY.current = null;
+    if (dy > 40) setOpen(true);
+    else if (dy < -40) setOpen(false);
+  };
+
+  return (
+    <div className="mb-3">
+      <div onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+        <button type="button" onClick={() => setOpen(!open)} aria-expanded={open} aria-controls="service-hall"
+          className="flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-2 text-sm font-semibold text-zinc-100 active:bg-zinc-800">
+          {open ? <I.ChevronUp size={16} /> : <I.ChevronDown size={16} />}
+          {open ? "收起二楼" : "下拉展开二楼"}
+          <span className="text-xs font-normal text-zinc-400">报修 · 热线</span>
+        </button>
+      </div>
+
+      {open && (
+        <div id="service-hall" className="hall mt-2 flex flex-col gap-3">
+          <Card>
+            <CardTitle icon={<I.Wrench size={16} />} title="宿舍报修" tone="bg-orange-400/15 text-orange-300" />
+            <div className="flex flex-wrap gap-2" role="group" aria-label="常见报修项目">
+              {REPAIR_ISSUES.map((x) => (
+                <button key={x} type="button" aria-pressed={issue === x} onClick={() => pick(x)}
+                  className={"min-h-[40px] whitespace-nowrap rounded-full border px-3.5 py-1.5 text-sm " +
+                    (issue === x ? "border-orange-400 bg-orange-400 font-semibold text-zinc-950" : "border-zinc-700 bg-zinc-950 text-zinc-200 active:bg-zinc-800")}>{x}</button>
+              ))}
+            </div>
+            <p className="mt-2.5 min-h-[20px] break-words text-xs text-zinc-400" role="status">
+              {!roomT ? "先在上方填“我的宿舍”" : copiedKey === "repair" ? "✅ 已复制：" + repairText(roomT, issue) : "点选问题，自动复制报修文字"}
+            </p>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <a href={"tel:" + MAINT_DIAL}
+                className="flex min-h-[46px] items-center justify-center gap-1.5 whitespace-nowrap rounded-xl bg-emerald-400 px-2 py-2 text-sm font-bold text-zinc-950 active:bg-emerald-300">
+                📞 一键呼叫
+              </a>
+              <a href={MAINT_URL} target="_blank" rel="noopener noreferrer"
+                className="flex min-h-[46px] items-center justify-center gap-1.5 whitespace-nowrap rounded-xl bg-sky-400 px-2 py-2 text-sm font-bold text-zinc-950 active:bg-sky-300">
+                🌐 官方报修系统
+              </a>
+            </div>
+          </Card>
+
+          <Card>
+            <CardTitle icon={<I.Phone size={16} />} title="紧急热线" tone="bg-red-400/15 text-red-300" />
+            <ul className="flex flex-col gap-2">
+              {HOTLINES.map((x) => <HotlineRow key={x.key} h={x} copiedKey={copiedKey} copy={copy} />)}
+            </ul>
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}
+/* ------------------------------ 3. 智能课程与签到 ------------------------------ */
+function CalBanner({ info, cal }) {
+  let cls = "border-sky-400/30 bg-sky-400/5 text-sky-100";
+  let text = "";
+  if (info.phase === "teaching") {
+    text = "📅 第 " + info.week + " 教学周 · " + cal.semester + " 学期";
+    if (info.holiday) { text += " · 🎉 今天是 " + info.holiday + "，课程暂停"; cls = "border-amber-400/40 bg-amber-400/10 text-amber-100"; }
+  } else if (info.phase === "recess") {
+    text = "🌴 本周为期中假期 (Recess Break)，常规课程暂停"; cls = "border-amber-400/40 bg-amber-400/10 text-amber-100";
+  } else if (info.phase === "before") {
+    text = "学期还没开始：Week 1 将在 " + info.days + " 天后开始";
+  } else if (info.phase === "after") {
+    text = "教学周已结束，进入复习 / 考试周，常规课程不再显示";
+  } else {
+    text = "还没有设置开学首日，点右上角“校历设置”填写";
+  }
+  return <p className={"mb-3 rounded-lg border px-3 py-2 text-sm font-medium leading-snug " + cls} role="status">{text}</p>;
+}
+
+function CourseCard({ attendDefault, now, cal, onCal, onFull, courses, onImport, onManage, customized }) {
+  const sec = Math.floor(now.getTime() / 1000);
+  const status = useMemo(() => getCourseStatus(courses, now, cal), [courses, cal.start, cal.recessFrom, cal.recessTo, cal.teachEnd, sec]);
+  const info = academicInfo(cal, now);
+  const todayList = courses.filter((c) => c.day === now.getDay() && courseOn(c, now, cal)).sort((a, b) => toMin(a.start) - toMin(b.start));
+
+  let body = null;
+  let attendUrl = "";
+  let moodleUrl = MOODLE_HOME;
+
+  if (!status) {
+    body = (
+      <div className="rounded-xl border border-dashed border-zinc-700 p-4 text-center">
+        <p className="text-base font-medium text-zinc-100">暂无课程安排</p>
+        <p className="mt-1 text-sm text-zinc-400">点下方“智能导入课表”</p>
+      </div>
+    );
+  } else {
+    const c = status.course;
+    attendUrl = normalizeUrl(c.attendUrl) || normalizeUrl(attendDefault);
+    moodleUrl = normalizeUrl(c.moodleUrl) || MOODLE_HOME;
+    const isNow = status.kind === "now";
+    const dayLabel = status.off === 0 ? "今天" : status.off === 1 ? "明天" : WEEKDAYS[c.day];
+    body = (
+      <div className={"rounded-xl border p-3.5 " + (isNow ? "border-emerald-400/50 bg-emerald-400/5" : "border-sky-400/40 bg-sky-400/5")}>
+        <div className="flex items-center justify-between gap-2">
+          <span className={"inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold " +
+            (isNow ? "bg-emerald-400/20 text-emerald-300" : "bg-sky-400/20 text-sky-300")}>
+            <span className={"h-1.5 w-1.5 rounded-full " + (isNow ? "bg-emerald-300" : "bg-sky-300")} />
+            {isNow ? "当前课程" : "下一堂课"}
+          </span>
+          <span className="text-xs text-zinc-300">{dayLabel}</span>
+        </div>
+        <p className="mt-3 break-words text-lg font-bold leading-snug text-zinc-50">{c.name}</p>
+        <p className="tnum mt-1 text-sm text-zinc-300">{c.start} – {c.end}{c.room ? " · " + c.room : ""}</p>
+        <p className="mt-3 text-sm font-semibold text-zinc-100">
+          {isNow ? "距离下课还有 " : "距离上课还有 "}
+          <span className={"tnum " + (isNow ? "text-emerald-300" : "text-sky-300")}>{fmtDur(status.mins)}</span>
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <Card>
+      <CardTitle icon={<I.Book size={18} />} title="智能课表" tone="bg-sky-400/15 text-sky-300"
+        right={<span className="flex shrink-0 items-center gap-1.5">
+          <button type="button" onClick={onFull}
+            className="inline-flex min-h-[36px] items-center gap-1 rounded-lg border border-sky-400/50 bg-sky-400/10 px-2.5 py-1 text-xs font-semibold text-sky-200 active:bg-sky-400/20">📋 完整课表</button>
+          <button type="button" onClick={onCal} aria-label="校历设置"
+            className="inline-flex min-h-[36px] items-center gap-1 rounded-lg border border-zinc-600 px-2 py-1 text-xs font-semibold text-zinc-100 active:bg-zinc-800">⚙️ 校历设置</button>
+        </span>} />
+      <CalBanner info={info} cal={cal} />
+      {body}
+      {todayList.length > 0 && (
+        <ul className="mt-3 flex flex-col gap-1.5" aria-label="今天的课程">
+          {todayList.map((c) => {
+            const nowMin = now.getHours() * 60 + now.getMinutes();
+            const live = toMin(c.start) <= nowMin && nowMin < toMin(c.end);
+            return (
+              <li key={c.id} className={"flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs " + (live ? "border-emerald-400/50 bg-emerald-400/10 text-emerald-100" : "border-zinc-800 bg-zinc-950 text-zinc-300")}>
+                <span className="min-w-0 truncate font-semibold">{c.name}</span>
+                <span className="tnum shrink-0">{c.start}–{c.end}{c.weeks ? " · W" + c.weeks : ""}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      <div className="mt-3 flex flex-col gap-2.5">
+        {/* 按钮 A：一键签到 */}
+        {attendUrl ? (
+          <a href={attendUrl} target="_blank" rel="noopener noreferrer"
+            className="flex min-h-[48px] items-center justify-center gap-2 rounded-xl bg-emerald-400 px-4 py-2.5 text-base font-bold text-zinc-950 shadow-[0_0_0_3px_rgba(52,211,153,0.2)] active:bg-emerald-300">
+            📍 一键签到 (Attendance)
+          </a>
+        ) : (
+          <button type="button" onClick={onManage}
+            className="flex min-h-[48px] items-center justify-center gap-2 rounded-xl bg-emerald-400 px-4 py-2.5 text-base font-bold text-zinc-950 shadow-[0_0_0_3px_rgba(52,211,153,0.2)] active:bg-emerald-300">
+            📍 一键签到 (Attendance)
+          </button>
+        )}
+        {!attendUrl && status && <p className="-mt-1 text-xs text-zinc-400">签到链接填一次即可（点上方按钮）</p>}
+
+        {/* 按钮 B：Moodle 课程页（独立按钮） */}
+        <a href={moodleUrl} target="_blank" rel="noopener noreferrer"
+          className="flex min-h-[48px] items-center justify-center gap-2 rounded-xl border border-zinc-600 bg-zinc-800 px-4 py-3 text-base font-semibold text-zinc-50 active:bg-zinc-700">
+          📚 Moodle 课程页
+        </a>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2.5 border-t border-zinc-800 pt-3">
+        <button type="button" onClick={onImport}
+          className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border border-sky-400/50 bg-sky-400/10 px-3 py-2 text-sm font-semibold text-sky-200 active:bg-sky-400/20">
+          ⚡ 智能导入课表
+        </button>
+        <button type="button" onClick={onManage}
+          className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm font-medium text-zinc-100 active:bg-zinc-800">
+          <I.Pencil size={14} /> 课表与链接
+        </button>
+      </div>
+      {!customized && <p className="mt-2.5 text-xs text-zinc-400">当前显示的是示范课表，导入你的课表后会自动替换；课程数据只保存在本机浏览器。</p>}
+    </Card>
+  );
+}
+
+
+const SAMPLE_PASTE = "CSC2001 数据结构 周一 08:30-10:30\nMAT1002 高等数学 Tue 14:00-16:00, Thu 14:00-16:00\nAcademic English\nWednesday 9:00 AM - 11:00 AM";
+
+function ImportModal({ customized, onApply, onFileApply, onManual, onClose }) {
+  const [text, setText] = useState("");
+  const [mode, setMode] = useState(customized ? "append" : "replace");
+  const [busy, setBusy] = useState(false);
+  const [fileErr, setFileErr] = useState("");
+  const [fileDiag, setFileDiag] = useState([]);
+  const [drag, setDrag] = useState(false);
+  const parsed = useMemo(() => {
+    const tx = parseTimetable(text);
+    if (tx.length === 0 && /<\/?(table|tr|td|th|div|span|body|html)\b/i.test(text)) {
+      try {
+        const hi = parseTimetableHtml(text);
+        if (hi && hi.length) { hi.skipped = tx.skipped; return hi; }
+      } catch (e) { console.log("[XMUM 课表] HTML 解析失败", e); }
+    }
+    return tx;
+  }, [text]);
+  const skipped = parsed.skipped || [];
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const handleFile = async (file) => {
+    if (!file) return;
+    setFileErr("");
+    setFileDiag([]);
+    if (!/\.(html?|xhtml)$/i.test(file.name) && file.type !== "text/html") {
+      setFileErr("请选择 .html 或 .htm 文件（教务系统课表页面另存而来）。");
+      return;
+    }
+    setBusy(true);
+    try {
+      const html = await readHtmlFile(file);
+      const items = parseTimetableHtml(html);
+      if (items.length === 0) {
+        setFileErr("解析失败：没有在这个文件里找到“星期 + 时间段”的课程。请确认保存的是课表页面本身，或改用下方的粘贴文本。");
+        setFileDiag((items.diag || []).slice(0, 8));
+      } else {
+        onFileApply(items, file.name, (items.diag || []).length);
+      }
+    } catch (err) {
+      console.log("[XMUM 课表] 读取或解析失败", err);
+      setFileErr("解析失败：" + (err && err.message ? err.message : "读取文件时出错，请重试"));
+    }
+    setBusy(false);
+  };
+
+  const sorted = parsed.slice().sort((a, b) =>
+    DAY_ORDER.indexOf(a.day) - DAY_ORDER.indexOf(b.day) || toMin(a.start) - toMin(b.start));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center" role="dialog" aria-modal="true" aria-label="智能导入课表">
+      <button type="button" aria-label="关闭" onClick={onClose} className="absolute inset-0 bg-black/70" />
+      <div className="sheet relative z-10 flex max-h-[92%] w-full max-w-xl flex-col overflow-hidden rounded-t-2xl border border-zinc-800 bg-zinc-900 sm:rounded-2xl"
+        style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
+        <div className="flex items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold text-zinc-50">⚡ 智能导入课表</h2>
+            <p className="text-xs text-zinc-400">仅在本机解析，不上传</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="关闭"
+            className="flex h-10 w-10 items-center justify-center rounded-lg border border-zinc-700 text-zinc-200 active:bg-zinc-800"><I.X size={18} /></button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+          <label htmlFor="file-in"
+            onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+            onDragLeave={() => setDrag(false)}
+            onDrop={(e) => { e.preventDefault(); setDrag(false); handleFile(e.dataTransfer && e.dataTransfer.files ? e.dataTransfer.files[0] : null); }}
+            className={"flex min-h-[132px] cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed px-4 py-5 text-center " +
+              (drag ? "border-sky-400 bg-sky-400/10" : "border-zinc-600 bg-zinc-950 active:bg-zinc-800")}>
+            <span className="flex h-11 w-11 items-center justify-center rounded-full bg-sky-400/15 text-sky-300"><I.Upload size={22} /></span>
+            <span className="text-base font-semibold text-zinc-50">{busy ? "正在解析…" : "上传教务课表 HTML 文件"}</span>
+            <span className="text-xs text-zinc-400">点击选择 .html 文件</span>
+          </label>
+          <input id="file-in" type="file" accept=".html,.htm,.xhtml,text/html" className="sr-only"
+            onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; handleFile(f); }} />
+          {fileErr && (
+            <div className="mt-2 rounded-lg border border-red-400/40 bg-red-400/10 px-3 py-2 text-sm leading-relaxed text-red-200" role="alert">
+              <p>{fileErr}</p>
+              {fileDiag.length > 0 && (
+                <ul className="mt-1.5 list-disc space-y-1 pl-5 text-xs text-red-100/90">
+                  {fileDiag.map((d, k) => <li key={k} className="break-words">{d}</li>)}
+                </ul>
+              )}
+              <p className="mt-1.5 text-xs text-red-100/70">已把解析到的文字片段打印到浏览器控制台（[XMUM 课表]），方便排查。</p>
+            </div>
+          )}
+
+          <div className="my-5 flex items-center gap-3 text-xs text-zinc-400">
+            <span className="h-px flex-1 bg-zinc-800" />或粘贴文本<span className="h-px flex-1 bg-zinc-800" />
+          </div>
+
+          <label htmlFor="paste-box" className={labelCls}>粘贴课表文本或网页源码</label>
+          <textarea id="paste-box" value={text} onChange={(e) => setText(e.target.value)} rows={5}
+            className={inputCls + " resize-y font-mono text-sm leading-relaxed"} placeholder={"例如：\n" + SAMPLE_PASTE} />
+          <div className="mt-2 flex items-center justify-between gap-3">
+            <p className="text-xs text-zinc-400">自动忽略“已缴费/Paid”、学期号与多余标签</p>
+            <button type="button" onClick={() => setText(SAMPLE_PASTE)} className="shrink-0 rounded-lg border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-200 active:bg-zinc-800">填入示例</button>
+          </div>
+
+          <div className="mt-4 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-zinc-100">识别结果：{sorted.length} 个时段</h3>
+            <div className="inline-flex overflow-hidden rounded-lg border border-zinc-700 text-xs">
+              <button type="button" onClick={() => setMode("append")} aria-pressed={mode === "append"}
+                className={"px-3 py-1.5 " + (mode === "append" ? "bg-sky-400 font-semibold text-zinc-950" : "bg-zinc-950 text-zinc-300")}>追加</button>
+              <button type="button" onClick={() => setMode("replace")} aria-pressed={mode === "replace"}
+                className={"px-3 py-1.5 " + (mode === "replace" ? "bg-sky-400 font-semibold text-zinc-950" : "bg-zinc-950 text-zinc-300")}>替换现有</button>
+            </div>
+          </div>
+          {skipped.length > 0 && (
+            <div className="mt-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs leading-relaxed text-amber-100" role="status">
+              <p>有 {skipped.length} 行没能识别，已跳过，不影响其他课程：</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                {skipped.slice(0, 5).map((s, k) => <li key={k} className="break-words">{s.n > 0 ? "第 " + s.n + " 行" : "整体"}：{s.reason}{s.text ? "（" + s.text + "）" : ""}</li>)}
+              </ul>
+            </div>
+          )}
+          <button type="button" onClick={onManual} className="mt-2 flex min-h-[42px] w-full items-center justify-center gap-1.5 rounded-xl border border-zinc-700 px-3 py-2 text-sm font-medium text-zinc-100 active:bg-zinc-800">
+            <I.Plus size={16} /> 手动添加一门课
+          </button>
+          <ul className="mt-2 flex flex-col gap-2">
+            {sorted.map((c, i) => (
+              <li key={i} className="flex items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2.5">
+                <span className="min-w-0 truncate text-sm font-medium text-zinc-50">{c.name}</span>
+                <span className="tnum shrink-0 text-xs text-zinc-300">{WEEKDAYS[c.day]} {c.start}–{c.end}</span>
+              </li>
+            ))}
+            {text.trim() && sorted.length === 0 && (
+              <li className="rounded-xl border border-dashed border-zinc-700 p-3 text-sm text-zinc-300">没识别到“星期 + 时间段”，可检查文本，或点上方“手动添加一门课”。</li>
+            )}
+            {!text.trim() && <li className="rounded-xl border border-dashed border-zinc-700 p-3 text-sm text-zinc-400">粘贴后，识别结果显示在这里。</li>}
+          </ul>
+        </div>
+
+        <div className="border-t border-zinc-800 px-4 py-3">
+          <button type="button" disabled={sorted.length === 0} onClick={() => onApply(sorted, mode)}
+            className={"flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-base font-semibold " +
+              (sorted.length ? "bg-sky-400 text-zinc-950 active:bg-sky-300" : "cursor-not-allowed bg-zinc-800 text-zinc-500")}>
+            <I.Check size={18} /> 导入粘贴内容（{sorted.length} 个时段）
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+/* ------------------------------ 完整课表：周视图 / 日列表 / .ics 导出 ------------------------------ */
+const TT_COLORS = [
+  { bg: "rgba(143,176,150,0.34)", line: "rgba(178,208,184,0.70)" },
+  { bg: "rgba(198,142,154,0.32)", line: "rgba(228,176,186,0.70)" },
+  { bg: "rgba(206,182,132,0.32)", line: "rgba(232,212,166,0.70)" },
+  { bg: "rgba(132,162,194,0.34)", line: "rgba(168,196,226,0.70)" },
+  { bg: "rgba(168,152,204,0.32)", line: "rgba(198,184,232,0.70)" },
+  { bg: "rgba(204,152,124,0.32)", line: "rgba(230,184,158,0.70)" },
+];
+const TT_HOUR_H = 44;
+const TT_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const TT_DAY_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+
+function ttCode(c) {
+  const m = /^[A-Za-z]{1,6}\s?\d{2,5}[A-Za-z]?/.exec(c.name || "");
+  return m ? m[0] : (c.name || "").slice(0, 6);
+}
+function ttTitle(c) {
+  const code = ttCode(c);
+  const rest = (c.name || "").slice(code.length).trim();
+  return rest || c.name;
+}
+function ttColor(c) {
+  const code = ttCode(c);
+  let h = 0;
+  for (let i = 0; i < code.length; i++) h = (h * 31 + code.charCodeAt(i)) % 997;
+  return TT_COLORS[h % TT_COLORS.length];
+}
+function addDays(d, n) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+}
+
+/* 第 w 教学周的周一（放假周不计入周次，所以放假之后的周要往后顺延） */
+function weekMonday(cal, w) {
+  const st = parseYmd(cal.start) || new Date();
+  const mon = addDays(st, -((st.getDay() + 6) % 7));
+  let shift = 0;
+  const rf = parseYmd(cal.recessFrom);
+  const rt = parseYmd(cal.recessTo);
+  if (rf && rt && daysBetween(rf, rt) >= 0) {
+    const recessWeekIdx = Math.floor(daysBetween(st, rf) / 7) + 1;
+    if (w >= recessWeekIdx) shift = Math.ceil((daysBetween(rf, rt) + 1) / 7);
+  }
+  return addDays(mon, (w - 1 + shift) * 7);
+}
+function totalTeachWeeks(cal) {
+  const st = parseYmd(cal.start);
+  const end = parseYmd(cal.teachEnd);
+  if (!st || !end) return 14;
+  let n = Math.ceil((daysBetween(st, end) + 1) / 7);
+  const rf = parseYmd(cal.recessFrom);
+  const rt = parseYmd(cal.recessTo);
+  if (rf && rt && daysBetween(rf, rt) >= 0) n -= Math.ceil((daysBetween(rf, rt) + 1) / 7);
+  return Math.max(1, Math.min(30, n));
+}
+
+/* 生成 iCalendar 文本：马来西亚 UTC+8 无夏令时，直接换算成 UTC，导入任何日历都不会错位 */
+function buildIcs(courses, cal) {
+  const st = parseYmd(cal.start);
+  const end = parseYmd(cal.teachEnd);
+  const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//XMUM Helper//Timetable//ZH", "CALSCALE:GREGORIAN", "X-WR-CALNAME:XMUM " + cal.semester + " 课表"];
+  const esc = (t) => String(t || "").replace(/\\/g, "\\\\").replace(/;/g, "\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
+  const utc = (d, hhmm) => {
+    const p = hhmm.split(":");
+    const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), parseInt(p[0], 10) - 8, parseInt(p[1], 10), 0));
+    return t.getUTCFullYear() + pad(t.getUTCMonth() + 1) + pad(t.getUTCDate()) + "T" + pad(t.getUTCHours()) + pad(t.getUTCMinutes()) + "00Z";
+  };
+  let count = 0;
+  if (st && end) {
+    const span = Math.min(400, daysBetween(st, end));
+    for (let k = 0; k <= span; k++) {
+      const d = addDays(st, k);
+      courses.forEach((c) => {
+        if (c.day !== d.getDay() || !courseOn(c, d, cal)) return;
+        lines.push("BEGIN:VEVENT");
+        lines.push("UID:" + c.id + "-" + ymdOf(d) + "@xmum-helper");
+        lines.push("DTSTAMP:" + utc(new Date(), "08:00"));
+        lines.push("DTSTART:" + utc(d, c.start));
+        lines.push("DTEND:" + utc(d, c.end));
+        lines.push("SUMMARY:" + esc(c.name));
+        if (c.room) lines.push("LOCATION:" + esc(c.room + ", Xiamen University Malaysia"));
+        const desc = [c.teacher ? "Lecturer: " + c.teacher : "", c.weeks ? "Weeks " + c.weeks : ""].filter(Boolean).join("\n");
+        if (desc) lines.push("DESCRIPTION:" + esc(desc));
+        lines.push("END:VEVENT");
+        count++;
+      });
+    }
+  }
+  lines.push("END:VCALENDAR");
+  return { text: lines.join("\r\n") + "\r\n", count: count };
+}
+
+function CoursePopover({ c, date, onClose }) {
+  const moodle = normalizeUrl(c.moodleUrl) || MOODLE_HOME;
+  const col = ttColor(c);
+  return (
+    <div className="absolute inset-0 z-20 flex items-end justify-center p-3" role="dialog" aria-modal="true" aria-label="课程详情">
+      <button type="button" aria-label="关闭详情" onClick={onClose} className="absolute inset-0 bg-black/50" />
+      <div className="tt-pop relative w-full max-w-md rounded-2xl border p-4" style={{ background: "#18181b", borderColor: col.line }}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold" style={{ color: col.line }}>{ttCode(c)}</p>
+            <p className="break-words text-lg font-bold leading-snug text-zinc-50">{ttTitle(c)}</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="关闭"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-zinc-700 text-zinc-200 active:bg-zinc-800"><I.X size={16} /></button>
+        </div>
+        <ul className="mt-3 flex flex-col gap-1.5 text-sm text-zinc-200">
+          <li className="tnum">🕒 {TT_DAY_CN[(c.day + 6) % 7]} {c.start} – {c.end}{date ? "（" + (date.getMonth() + 1) + "/" + date.getDate() + "）" : ""}</li>
+          <li>📍 {c.room || "教室未填写"}</li>
+          <li>👤 {c.teacher || "教师信息：重新导入课表后显示"}</li>
+          {c.weeks && <li>🗓️ Week {c.weeks}</li>}
+        </ul>
+        <a href={moodle} target="_blank" rel="noopener noreferrer"
+          className="mt-4 flex min-h-[46px] items-center justify-center gap-2 rounded-xl bg-sky-400 px-4 py-2.5 text-sm font-bold text-zinc-950 active:bg-sky-300">📚 打开 Moodle 课程页</a>
+      </div>
+    </div>
+  );
+}
+
+function WeekGrid({ days, courses, cal, now, onPick }) {
+  let minH = 8;
+  let maxH = 20;
+  const per = days.map((d) => courses.filter((c) => c.day === d.getDay() && courseOn(c, d, cal)));
+  per.forEach((list) => list.forEach((c) => {
+    minH = Math.min(minH, Math.floor(toMin(c.start) / 60));
+    maxH = Math.max(maxH, Math.ceil(toMin(c.end) / 60));
+  }));
+  const H = (maxH - minH) * TT_HOUR_H;
+  const hours = [];
+  for (let h = minH; h <= maxH; h++) hours.push(h);
+  const todayKey = ymdOf(now);
+  const tpl = { display: "grid", gridTemplateColumns: "34px repeat(7, minmax(60px, 1fr))" };
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  return (
+    <div className="overflow-x-auto pb-2" style={{ WebkitOverflowScrolling: "touch" }}>
+      <div style={{ minWidth: 460 }}>
+        <div style={tpl} className="sticky top-0 z-10 border-b border-zinc-800 bg-zinc-950">
+          <div />
+          {days.map((d, i) => {
+            const isToday = ymdOf(d) === todayKey;
+            const hol = CAL_HOLIDAYS[ymdOf(d)];
+            return (
+              <div key={i} className={"py-1.5 text-center " + (isToday ? "rounded-t-lg bg-sky-400/15" : "")}>
+                <p className={"text-[11px] font-semibold " + (isToday ? "text-sky-200" : "text-zinc-400")}>{TT_DAYS[i]}</p>
+                <p className={"tnum text-xs " + (isToday ? "font-bold text-sky-100" : "text-zinc-300")}>{d.getDate()}{hol ? "🎉" : ""}</p>
+              </div>
+            );
+          })}
+        </div>
+        <div style={tpl}>
+          <div className="relative" style={{ position: "relative", height: H }}>
+            {hours.map((h) => (
+              <span key={h} className="tnum absolute right-1 text-[9px] text-zinc-500" style={{ position: "absolute", top: (h - minH) * TT_HOUR_H - 5 }}>{pad(h)}:00</span>
+            ))}
+          </div>
+          {days.map((d, i) => {
+            const isToday = ymdOf(d) === todayKey;
+            const hol = CAL_HOLIDAYS[ymdOf(d)];
+            return (
+              <div key={i} className="relative border-l border-zinc-800" style={{ position: "relative", height: H, background: isToday ? "rgba(56,189,248,0.06)" : hol ? "rgba(251,191,36,0.05)" : "transparent" }}>
+                {hours.map((h) => <div key={h} className="absolute inset-x-0 border-t border-zinc-800/80" style={{ position: "absolute", left: 0, right: 0, top: (h - minH) * TT_HOUR_H }} />)}
+                {isToday && nowMin >= minH * 60 && nowMin <= maxH * 60 && (
+                  <div className="absolute inset-x-0 z-[5] border-t-2 border-rose-400/80" style={{ position: "absolute", left: 0, right: 0, top: ((nowMin - minH * 60) / 60) * TT_HOUR_H }} />
+                )}
+                {per[i].map((c) => {
+                  const col = ttColor(c);
+                  const top = ((toMin(c.start) - minH * 60) / 60) * TT_HOUR_H + 1;
+                  const h = ((toMin(c.end) - toMin(c.start)) / 60) * TT_HOUR_H - 2;
+                  return (
+                    <button key={c.id} type="button" onClick={() => onPick(c, d)} aria-label={"查看 " + c.name + " 详情"}
+                      className="tt-block absolute overflow-hidden rounded-lg p-1 text-left"
+                      style={{ position: "absolute", left: 2, right: 2, top: top, height: h, background: col.bg, border: "1px solid " + col.line, color: "#f5f5f4" }}>
+                      <span className="block truncate text-[11px] font-bold leading-tight">{ttCode(c)}</span>
+                      {c.room && <span className="mt-0.5 inline-block max-w-full truncate rounded px-1 text-[9px] leading-tight" style={{ background: "rgba(0,0,0,0.28)" }}>{c.room}</span>}
+                      <span className="tnum mt-0.5 block text-[9px] leading-tight opacity-80">{c.start}–{c.end}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DayList({ days, idx, setIdx, courses, cal, now, onPick }) {
+  const d = days[idx];
+  const todayKey = ymdOf(now);
+  const list = courses.filter((c) => c.day === d.getDay() && courseOn(c, d, cal)).sort((a, b) => toMin(a.start) - toMin(b.start));
+  const info = academicInfo(cal, d);
+  const hol = CAL_HOLIDAYS[ymdOf(d)];
+  let emptyText = "今日没有安排";
+  let emptyIcon = "☕";
+  if (info.phase === "recess") { emptyText = "放假周，常规课程暂停"; emptyIcon = "🌴"; }
+  else if (hol) { emptyText = hol + " 公共假日，课程暂停"; emptyIcon = "🎉"; }
+  else if (info.phase === "before") { emptyText = "学期还没开始"; emptyIcon = "🕰️"; }
+  else if (info.phase === "after") { emptyText = "教学周已结束"; emptyIcon = "📖"; }
+  return (
+    <div>
+      <div className="flex gap-2 overflow-x-auto px-4 pb-3 pt-1" role="tablist" aria-label="选择星期" style={{ WebkitOverflowScrolling: "touch" }}>
+        {days.map((x, i) => {
+          const sel = i === idx;
+          const isToday = ymdOf(x) === todayKey;
+          return (
+            <button key={i} type="button" role="tab" aria-selected={sel} onClick={() => setIdx(i)}
+              className={"flex min-h-[62px] min-w-[52px] shrink-0 flex-col items-center justify-center rounded-2xl border px-2 py-1.5 " +
+                (sel ? "border-sky-400 bg-sky-400/20 text-sky-100" : "border-zinc-800 bg-zinc-900 text-zinc-300")}>
+              <span className="text-[11px] font-semibold">{TT_DAYS[i]}</span>
+              <span className="tnum text-base font-bold">{x.getDate()}</span>
+              <span className={"mt-0.5 h-1 w-1 rounded-full " + (isToday ? "bg-sky-300" : "bg-transparent")} />
+            </button>
+          );
+        })}
+      </div>
+      <div className="px-4 pb-4">
+        <p className="mb-2 text-xs text-zinc-400">{TT_DAY_CN[idx]} · {d.getMonth() + 1} 月 {d.getDate()} 日 · 共 {list.length} 节</p>
+        {list.length === 0 ? (
+          <div className="flex flex-col items-center rounded-2xl border border-dashed border-zinc-700 px-4 py-10 text-center">
+            <svg width="64" height="64" viewBox="0 0 64 64" aria-hidden="true">
+              <ellipse cx="32" cy="54" rx="20" ry="4" fill="#27272a" />
+              <path d="M16 26h28v14a12 12 0 0 1-12 12h-4a12 12 0 0 1-12-12z" fill="#52525b" stroke="#a1a1aa" strokeWidth="2" strokeLinejoin="round" />
+              <path d="M44 30h4a6 6 0 0 1 0 12h-4" fill="none" stroke="#a1a1aa" strokeWidth="2" strokeLinecap="round" />
+              <path d="M24 20c0-4 4-4 4-8M33 20c0-4 4-4 4-8" fill="none" stroke="#d4d4d8" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+            <p className="mt-3 text-base font-semibold text-zinc-100">{emptyIcon} {emptyText}</p>
+            <p className="mt-1 text-xs text-zinc-400">好好休息，或者去图书馆看看书。</p>
+          </div>
+        ) : (
+          <ol className="relative flex flex-col gap-3 border-l border-zinc-800 pl-4">
+            {list.map((c) => {
+              const col = ttColor(c);
+              return (
+                <li key={c.id} className="relative flex gap-3">
+                  <span className="absolute -left-[21px] top-3 h-2.5 w-2.5 rounded-full border-2 border-zinc-950" style={{ background: col.line }} />
+                  <div className="tnum w-14 shrink-0 pt-1">
+                    <p className="text-xl font-bold leading-none text-zinc-50">{c.start}</p>
+                    <p className="mt-1 text-xs text-zinc-400">{c.end}</p>
+                  </div>
+                  <button type="button" onClick={() => onPick(c, d)} aria-label={"查看 " + c.name + " 详情"}
+                    className="tt-block min-w-0 flex-1 rounded-2xl p-3 text-left" style={{ background: col.bg, border: "1px solid " + col.line, color: "#f5f5f4" }}>
+                    <p className="break-words text-[15px] font-bold leading-snug">{ttTitle(c)}</p>
+                    <div className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
+                      {c.room && <span className="rounded-md px-1.5 py-0.5 font-semibold" style={{ background: "rgba(0,0,0,0.30)" }}>📍 {c.room}</span>}
+                      <span className="rounded-md px-1.5 py-0.5" style={{ background: "rgba(0,0,0,0.22)" }}>{ttCode(c)}</span>
+                      {c.weeks && <span className="rounded-md px-1.5 py-0.5" style={{ background: "rgba(0,0,0,0.22)" }}>Week {c.weeks}</span>}
+                    </div>
+                    {c.teacher && <p className="mt-2 truncate text-xs opacity-80">👤 {c.teacher}</p>}
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FullTimetable({ now, cal, courses, onClose, onImport }) {
+  const info = academicInfo(cal, now);
+  const total = totalTeachWeeks(cal);
+  const curWeek = info.phase === "teaching" ? info.week : 1;
+  const [week, setWeek] = useState(Math.min(total, Math.max(1, curWeek)));
+  const [view, setView] = useState("week");
+  const [pop, setPop] = useState(null);
+  const [icsOpen, setIcsOpen] = useState(false);
+  const [copiedKey, copy] = useCopy();
+  const monday = weekMonday(cal, week);
+  const days = [0, 1, 2, 3, 4, 5, 6].map((i) => addDays(monday, i));
+  const todayIdx = days.findIndex((d) => ymdOf(d) === ymdOf(now));
+  const [idx, setIdx] = useState(todayIdx >= 0 ? todayIdx : 0);
+  const ics = useMemo(() => (icsOpen ? buildIcs(courses, cal) : { text: "", count: 0 }), [icsOpen, courses, cal]);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") { if (pop) setPop(null); else onClose(); } };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, pop]);
+
+  const weekOptions = [];
+  for (let w = 1; w <= total; w++) weekOptions.push(w);
+  const css = ".tt-sheet{animation:ttUp .28s cubic-bezier(.2,.8,.2,1)}.tt-pop{animation:ttUp .2s ease-out}.tt-block{transition:transform .14s ease,box-shadow .14s ease}.tt-block:active{transform:scale(.97)}.tt-block:hover{box-shadow:0 0 14px rgba(255,255,255,.12)}@keyframes ttUp{from{transform:translateY(24px);opacity:0}to{transform:translateY(0);opacity:1}}@media (prefers-reduced-motion:reduce){.tt-sheet,.tt-pop{animation:none}.tt-block{transition:none}}";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center" role="dialog" aria-modal="true" aria-label="完整课表">
+      <style>{css}</style>
+      <button type="button" aria-label="关闭" onClick={onClose} className="absolute inset-0 bg-black/60" />
+      <div className="tt-sheet relative z-10 flex h-[94%] w-full max-w-xl flex-col overflow-hidden rounded-t-3xl border border-zinc-700 bg-zinc-950"
+        style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
+        <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-zinc-600" />
+        <div className="flex items-center justify-between gap-2 px-3 pb-3 pt-2">
+          <label className="relative shrink-0">
+            <span className="sr-only">选择周次</span>
+            <select value={week} onChange={(e) => { setWeek(parseInt(e.target.value, 10)); setIdx(0); }}
+              className="min-h-[40px] appearance-none rounded-xl border border-zinc-700 bg-zinc-900 py-1.5 pl-3 pr-7 text-sm font-semibold text-zinc-50">
+              {weekOptions.map((w) => <option key={w} value={w}>{"Week " + w + (info.phase === "teaching" && info.week === w ? " · 本周" : "")}</option>)}
+            </select>
+            <span aria-hidden="true" className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-zinc-400">▾</span>
+          </label>
+          <div className="inline-flex overflow-hidden rounded-xl border border-zinc-700 text-xs" role="tablist" aria-label="视图切换">
+            <button type="button" role="tab" aria-selected={view === "week"} onClick={() => setView("week")}
+              className={"min-h-[40px] px-3 py-1.5 font-semibold " + (view === "week" ? "bg-sky-400 text-zinc-950" : "bg-zinc-900 text-zinc-300")}>📅 周视图</button>
+            <button type="button" role="tab" aria-selected={view === "day"} onClick={() => setView("day")}
+              className={"min-h-[40px] px-3 py-1.5 font-semibold " + (view === "day" ? "bg-sky-400 text-zinc-950" : "bg-zinc-900 text-zinc-300")}>📋 日列表</button>
+          </div>
+          <button type="button" onClick={onClose} aria-label="关闭完整课表"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-zinc-700 text-zinc-200 active:bg-zinc-800"><I.X size={18} /></button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <p className="px-4 pb-2 text-xs text-zinc-400">{cal.semester} 学期 · {monday.getMonth() + 1}/{monday.getDate()} – {addDays(monday, 6).getMonth() + 1}/{addDays(monday, 6).getDate()}</p>
+          {view === "week"
+            ? <WeekGrid days={days} courses={courses} cal={cal} now={now} onPick={(c, d) => setPop({ c: c, d: d })} />
+            : <DayList days={days} idx={idx} setIdx={setIdx} courses={courses} cal={cal} now={now} onPick={(c, d) => setPop({ c: c, d: d })} />}
+        </div>
+
+        <div className="grid grid-cols-2 gap-2.5 border-t border-zinc-800 px-3 py-3">
+          <button type="button" onClick={() => { onClose(); onImport(); }}
+            className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border border-zinc-700 bg-zinc-900 px-2 py-2 text-xs font-semibold text-zinc-100 active:bg-zinc-800">🔄 重新上传课表 HTML</button>
+          <button type="button" onClick={() => setIcsOpen(true)}
+            className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border border-sky-400/50 bg-sky-400/10 px-2 py-2 text-xs font-semibold text-sky-200 active:bg-sky-400/20">📤 导出 iCalendar (.ics)</button>
+        </div>
+
+        {pop && <CoursePopover c={pop.c} date={pop.d} onClose={() => setPop(null)} />}
+
+        {icsOpen && (
+          <div className="absolute inset-0 z-20 flex items-end justify-center p-3" role="dialog" aria-modal="true" aria-label="导出 iCalendar">
+            <button type="button" aria-label="关闭" onClick={() => setIcsOpen(false)} className="absolute inset-0 bg-black/60" />
+            <div className="tt-pop relative flex max-h-[85%] w-full max-w-md flex-col rounded-2xl border border-zinc-700 bg-zinc-900 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <h3 className="text-base font-bold text-zinc-50">📤 导出 iCalendar</h3>
+                <button type="button" onClick={() => setIcsOpen(false)} aria-label="关闭"
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-zinc-700 text-zinc-200 active:bg-zinc-800"><I.X size={16} /></button>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-zinc-300">
+                已生成 {ics.count} 个上课日程（只包含各课程有效周次内的日期，已跳过公共假日和放假周）。这个页面里不能直接下载文件，请复制下面的内容，粘贴进“备忘录”或任意文本文件，保存为 <span className="font-mono text-zinc-100">timetable.ics</span>，再用 iPhone 日历 / Google Calendar 打开导入。
+              </p>
+              <textarea id="ics-text" readOnly rows={6} value={ics.text} onFocus={(e) => e.target.select()}
+                className="mt-3 min-h-[120px] w-full flex-1 rounded-lg border border-zinc-700 bg-zinc-950 p-2 font-mono text-[11px] text-zinc-200" />
+              <button type="button" disabled={!ics.count} onClick={() => copy("ics", ics.text)}
+                className={"mt-3 flex min-h-[46px] items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold " + (copiedKey === "ics" ? "bg-emerald-400 text-zinc-950" : ics.count ? "bg-sky-400 text-zinc-950 active:bg-sky-300" : "bg-zinc-800 text-zinc-500")}>
+                {copiedKey === "ics" ? <><I.Check size={16} /> 已复制</> : <><I.Copy size={16} /> 复制 .ics 内容</>}
+              </button>
+              {!ics.count && <p className="mt-2 text-xs text-amber-300">没有可导出的课程，请先导入课表或检查校历设置。</p>}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+function ManageDrawer({ attendDefault, setAttendDefault, courses, setCourses, markCustom, onClose }) {
+  const [form, setForm] = useState({ name: "", days: [1], start: "09:00", end: "11:00" });
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const groups = useMemo(() => {
+    const m = {};
+    const order = [];
+    courses.forEach((c) => {
+      if (!m[c.name]) { m[c.name] = { name: c.name, slots: [], attendUrl: c.attendUrl || "", moodleUrl: c.moodleUrl || "" }; order.push(c.name); }
+      m[c.name].slots.push(c);
+    });
+    return order.map((n) => {
+      const g = m[n];
+      g.slots.sort((a, b) => DAY_ORDER.indexOf(a.day) - DAY_ORDER.indexOf(b.day) || toMin(a.start) - toMin(b.start));
+      return g;
+    });
+  }, [courses]);
+
+  const toggleDay = (d) => {
+    const has = form.days.indexOf(d) >= 0;
+    setForm({ ...form, days: has ? form.days.filter((x) => x !== d) : [...form.days, d] });
+  };
+
+  const add = (e) => {
+    e.preventDefault();
+    if (!form.name.trim()) { setError("请输入课程名称"); return; }
+    if (form.days.length === 0) { setError("请至少选择一个上课日"); return; }
+    if (!form.start || !form.end || toMin(form.end) <= toMin(form.start)) { setError("下课时间必须晚于上课时间"); return; }
+    setError("");
+    const name = form.name.trim();
+    const ref = courses.find((c) => c.name === name);
+    const added = form.days.map((d) => ({
+      id: uid(), day: d, start: form.start, end: form.end, name: name,
+      attendUrl: ref ? ref.attendUrl || "" : "", moodleUrl: ref ? ref.moodleUrl || "" : "",
+    }));
+    setCourses([...courses, ...added]);
+    markCustom();
+    setForm({ ...form, name: "" });
+  };
+
+  const setLink = (name, field, value) => {
+    setCourses(courses.map((c) => (c.name === name ? { ...c, [field]: value } : c)));
+    markCustom();
+  };
+  const removeGroup = (name) => { setCourses(courses.filter((c) => c.name !== name)); markCustom(); };
+  const removeSlot = (id) => { setCourses(courses.filter((c) => c.id !== id)); markCustom(); };
+  const clearAll = () => { setCourses([]); markCustom(); };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center" role="dialog" aria-modal="true" aria-label="课表与链接">
+      <button type="button" aria-label="关闭" onClick={onClose} className="absolute inset-0 bg-black/70" />
+      <div className="sheet relative z-10 flex max-h-[92%] w-full max-w-xl flex-col overflow-hidden rounded-t-2xl border border-zinc-800 bg-zinc-900 sm:rounded-2xl"
+        style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
+        <div className="flex items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold text-zinc-50">课表与链接</h2>
+            <p className="text-xs text-zinc-400">为每门课设置签到链接与 Moodle 主页，仅保存在本机</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="关闭"
+            className="flex h-10 w-10 items-center justify-center rounded-lg border border-zinc-700 text-zinc-200 active:bg-zinc-800"><I.X size={18} /></button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+          <div className="mb-4 rounded-xl border border-emerald-400/40 bg-emerald-400/5 p-3">
+            <label htmlFor="attend-default" className="mb-1 block text-sm font-semibold text-zinc-50">📍 通用签到链接（填一次，所有课程自动使用）</label>
+            <input id="attend-default" type="url" inputMode="url" autoCapitalize="none" autoCorrect="off" value={attendDefault}
+              onChange={(e) => setAttendDefault(e.target.value.trim())} className={inputCls} placeholder="粘贴签到页网址 https://" />
+            <p className="mt-1.5 text-xs leading-relaxed text-zinc-400">网页沙箱无法联网自动抓取，所以只需手动粘贴这一次；下面某门课单独填写的链接优先。</p>
+          </div>
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-zinc-100">我的课程（{groups.length} 门）</h3>
+            <button type="button" onClick={clearAll} className="rounded-lg border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-300 active:bg-zinc-800">清空全部</button>
+          </div>
+          <ul className="mt-2 flex flex-col gap-3">
+            {groups.map((g, i) => (
+              <li key={g.name} className="rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <p className="min-w-0 break-words text-sm font-semibold text-zinc-50">{g.name}</p>
+                  <button type="button" onClick={() => removeGroup(g.name)} aria-label={"删除课程 " + g.name}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-zinc-400 active:bg-zinc-800"><I.Trash size={15} /></button>
+                </div>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {g.slots.map((s) => (
+                    <span key={s.id} className="tnum inline-flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-900 py-1 pl-2 pr-1 text-xs text-zinc-200">
+                      {WEEKDAYS[s.day]} {s.start}–{s.end}
+                      <button type="button" onClick={() => removeSlot(s.id)} aria-label="删除该时段" className="flex h-5 w-5 items-center justify-center rounded text-zinc-400 active:bg-zinc-700"><I.X size={12} /></button>
+                    </span>
+                  ))}
+                </div>
+                <div className="mt-3 grid grid-cols-1 gap-2.5">
+                  <div>
+                    <label htmlFor={"lk-a-" + i} className={labelCls}>签到链接</label>
+                    <input id={"lk-a-" + i} type="url" inputMode="url" autoCapitalize="none" autoCorrect="off" value={g.attendUrl}
+                      onChange={(e) => setLink(g.name, "attendUrl", e.target.value)} className={inputCls} placeholder={attendDefault ? "留空则使用通用链接" : "https://"} />
+                  </div>
+                  <div>
+                    <label htmlFor={"lk-m-" + i} className={labelCls}>Moodle 课程主页</label>
+                    <input id={"lk-m-" + i} type="url" inputMode="url" autoCapitalize="none" autoCorrect="off" value={g.moodleUrl}
+                      onChange={(e) => setLink(g.name, "moodleUrl", e.target.value)} className={inputCls} placeholder="留空则打开 Moodle 首页" />
+                  </div>
+                </div>
+              </li>
+            ))}
+            {groups.length === 0 && <li className="rounded-xl border border-dashed border-zinc-700 p-4 text-center text-sm text-zinc-400">还没有课程，可以用“智能导入课表”，或在下方手动添加。</li>}
+          </ul>
+
+          <form onSubmit={add} className="mt-5 grid grid-cols-2 gap-3 border-t border-zinc-800 pt-4" noValidate>
+            <h3 className="col-span-2 text-sm font-semibold text-zinc-100">手动添加一门课</h3>
+            <div className="col-span-2">
+              <label htmlFor="c-name" className={labelCls}>课程名称</label>
+              <input id="c-name" type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} placeholder="例如：操作系统" />
+            </div>
+            <div className="col-span-2">
+              <span className={labelCls}>上课日（可多选）</span>
+              <div className="flex flex-wrap gap-2">
+                {DAY_ORDER.map((d) => {
+                  const on = form.days.indexOf(d) >= 0;
+                  return (
+                    <button key={d} type="button" onClick={() => toggleDay(d)} aria-pressed={on}
+                      className={"min-h-[40px] min-w-[48px] rounded-lg border px-3 text-sm font-medium " +
+                        (on ? "border-sky-400 bg-sky-400/20 text-sky-200" : "border-zinc-700 bg-zinc-950 text-zinc-300")}>
+                      {WEEKDAYS[d]}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div>
+              <label htmlFor="c-start" className={labelCls}>上课时间</label>
+              <input id="c-start" type="time" value={form.start} onChange={(e) => setForm({ ...form, start: e.target.value })} className={inputCls + " tnum"} />
+            </div>
+            <div>
+              <label htmlFor="c-end" className={labelCls}>下课时间</label>
+              <input id="c-end" type="time" value={form.end} onChange={(e) => setForm({ ...form, end: e.target.value })} className={inputCls + " tnum"} />
+            </div>
+            {error && <p className="col-span-2 text-sm text-red-300" role="alert">{error}</p>}
+            <button type="submit" className="col-span-2 flex min-h-[46px] items-center justify-center gap-2 rounded-xl bg-sky-400 px-4 py-2.5 text-base font-semibold text-zinc-950 active:bg-sky-300">
+              <I.Plus size={18} /> 添加课程
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+/* ------------------------------ 4. 宿舍电费：JomPAY 免登直充 + 备用入口 ------------------------------ */
+function CopyRow({ label, value, copyKey, copiedKey, copy, accent }) {
+  const done = copiedKey === copyKey;
+  const has = !!value;
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-zinc-800 px-3 py-2 last:border-b-0">
+      <div className="min-w-0">
+        <p className="text-xs text-zinc-400">{label}</p>
+        <p className={"tnum break-all font-mono text-base font-semibold " + (accent || "text-zinc-50")}>{value || "—"}</p>
+      </div>
+      <button type="button" disabled={!has} onClick={() => has && copy(copyKey, value)} aria-label={"复制 " + label}
+        className={"inline-flex min-h-[38px] shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold " +
+          (done ? "bg-emerald-400 text-zinc-950" : has ? "border border-zinc-600 text-zinc-100 active:bg-zinc-800" : "cursor-not-allowed border border-zinc-800 text-zinc-600")}>
+        {done ? <><I.Check size={14} /> 已复制</> : <><I.Copy size={14} /> 复制</>}
+      </button>
+    </div>
+  );
+}
+
+const IN_WECHAT = typeof navigator !== "undefined" && /MicroMessenger/i.test(navigator.userAgent || "");
+
+function ElectricityCard({ myRoom, onEditRoom }) {
+  const [sid, setSid] = useLocalState("xmum_student_id", "");
+  const room = myRoom || "";
+  const [mode, setMode] = useLocalState("xmum_ref1_mode_v2", "room");
+  const [deep, setDeep] = useLocalState("xmum_elec_deep", "");
+  const [editLink, setEditLink] = useState(false);
+  const [guide, setGuide] = useState(false);
+  const [toast, setToast] = useState("");
+  const [biller, setBiller] = useLocalState("xmum_biller_v2", BILLER_CODE);
+  const [editBiller, setEditBiller] = useState(false);
+  const toastT = useRef(null);
+  const showToast = (m) => { setToast(m); clearTimeout(toastT.current); toastT.current = setTimeout(() => setToast(""), 3500); };
+  const [copiedKey, copy] = useCopy();
+
+  const clean = (s) => s.replace(/[^A-Za-z0-9-]/g, "").toUpperCase();
+  const idC = clean(sid);
+  const roomC = clean(room);
+  const ref1 = mode === "id" ? idC : roomC;
+  const ref2 = mode === "id" ? roomC : idC;
+  const ready = ref1.length >= 2;
+  const billerC = (biller || BILLER_CODE).replace(/\s+/g, "");
+  const allText = "Biller Code: " + billerC + "\nRef-1: " + ref1 + (ref2 ? "\nRef-2: " + ref2 : "");
+  const deepUrl = normalizeUrl(deep);
+  const portalHref = deepUrl || DEFAULT_ELECTRICITY_URL;
+
+  const launchTng = async () => {
+    if (!ready) return;
+    const ok = await copyText(ref1);
+    showToast(ok ? "📋 宿舍账单号已自动复制！打开 TNG 后直接在 JomPAY 粘贴" : "⚠️ 自动复制失败，请点“仅复制 Ref-1”或在下方手动复制");
+    if (IN_WECHAT) { setGuide(true); return; }
+    setGuide(false);
+    let left = false;
+    const mark = () => { left = true; };
+    const onVis = () => { if (document.hidden) left = true; };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", mark);
+    window.addEventListener("blur", mark);
+    try { window.location.href = TNG_SCHEME; } catch (err) { /* 忽略，走兜底 */ }
+    setTimeout(() => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("pagehide", mark);
+      window.removeEventListener("blur", mark);
+      if (!left && !document.hidden) setGuide(true);
+    }, 1500);
+  };
+  const btnBase = "flex min-h-[48px] items-center justify-center gap-1.5 rounded-xl px-3 py-2.5 text-sm font-bold transition-colors ";
+
+  return (
+    <div className="flex flex-col gap-3">
+      {/* 方式一：JomPAY */}
+      <Card className="border-emerald-400/40">
+        <CardTitle
+          icon={<I.Zap size={18} />}
+          title="宿舍电费 · JomPAY 极速缴费"
+          tone="bg-emerald-400/15 text-emerald-300"
+          right={<span className="shrink-0 rounded-full bg-emerald-400 px-2 py-0.5 text-[11px] font-bold text-zinc-950">推荐 · 免排队</span>}
+        />
+
+        <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2">
+          <div className="min-w-0">
+            <label htmlFor="sid" className={labelCls}>学号</label>
+            <input id="sid" type="text" autoComplete="off" autoCapitalize="characters" autoCorrect="off" value={sid}
+              onChange={(e) => setSid(e.target.value)} className={inputCls + " tnum"} placeholder="例如 SWE2309123" />
+          </div>
+          <div className="min-w-0">
+            <p className={labelCls}>我的宿舍</p>
+            <div className="flex min-h-[46px] items-center justify-between gap-2 rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2">
+              <span className={"whitespace-nowrap font-mono text-base font-semibold " + (room ? "text-zinc-50" : "text-zinc-500")}>{room || "未设置"}</span>
+              <button type="button" onClick={onEditRoom} className="shrink-0 rounded-lg border border-zinc-600 px-2.5 py-1 text-xs font-semibold text-zinc-100 active:bg-zinc-800">{room ? "修改" : "去设置"}</button>
+            </div>
+          </div>
+        </div>
+
+                {(/\s/.test(sid) || (sid && !/^[A-Za-z]{2,}\d{4,}$/.test(sid.trim()))) && (
+          <p className="mt-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs leading-relaxed text-amber-200" role="alert">
+            ⚠️ 学号形如 SWE2309123，空格符号会自动去掉，请核对。
+          </p>
+        )}
+
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <span className="text-xs text-zinc-400">Ref-1 使用</span>
+          <div className="inline-flex overflow-hidden rounded-lg border border-zinc-700 text-xs">
+            <button type="button" onClick={() => setMode("id")} aria-pressed={mode === "id"}
+              className={"min-h-[36px] px-3 py-1.5 " + (mode === "id" ? "bg-sky-400 font-semibold text-zinc-950" : "bg-zinc-950 text-zinc-300")}>学号</button>
+            <button type="button" onClick={() => setMode("room")} aria-pressed={mode === "room"}
+              className={"min-h-[36px] px-3 py-1.5 " + (mode === "room" ? "bg-sky-400 font-semibold text-zinc-950" : "bg-zinc-950 text-zinc-300")}>房间号</button>
+          </div>
+        </div>
+
+        <div className="mt-3 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950">
+          <CopyRow label="Biller Code" value={billerC} copyKey="bc" copiedKey={copiedKey} copy={copy} accent="text-amber-300" />
+          <CopyRow label="Ref-1" value={ref1} copyKey="r1" copiedKey={copiedKey} copy={copy} />
+          <CopyRow label="Ref-2（可选）" value={ref2} copyKey="r2" copiedKey={copiedKey} copy={copy} />
+        </div>
+
+        <div className="mt-3 flex gap-2">
+          <button type="button" disabled={!ready} onClick={launchTng}
+            className={btnBase + "min-w-0 flex-1 " + (ready ? "bg-sky-400 text-zinc-950 active:bg-sky-300" : "cursor-not-allowed bg-zinc-800 text-zinc-500")}>
+            ⚡ 复制账号并打开 TNG eWallet
+          </button>
+          <button type="button" disabled={!ready} onClick={() => ready && copy("r1big", ref1)}
+            className={btnBase + "shrink-0 whitespace-nowrap border " + (copiedKey === "r1big" ? "border-emerald-400 bg-emerald-400 text-zinc-950" : ready ? "border-zinc-600 text-zinc-100 active:bg-zinc-800" : "cursor-not-allowed border-zinc-800 text-zinc-600")}>
+            {copiedKey === "r1big" ? "✅ 已复制" : "📋 仅复制 Ref-1"}
+          </button>
+        </div>
+        {!ready && <p className="mt-2 text-xs text-zinc-400">先填宿舍号或学号</p>}
+
+        {guide && ready && (
+          <div className="mt-2 rounded-xl border border-sky-400/40 bg-zinc-950 p-3" role="group" aria-label="手动缴费步骤">
+            <div className="flex items-start justify-between gap-2">
+              <p className="text-sm font-semibold text-zinc-50">{IN_WECHAT ? "微信内无法直接唤起，请按步骤操作" : "没有自动打开 TNG？两步搞定"}</p>
+              <button type="button" onClick={() => setGuide(false)} aria-label="关闭"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-zinc-700 text-zinc-300 active:bg-zinc-800"><I.X size={14} /></button>
+            </div>
+            <ol className="mt-2 flex flex-col gap-2">
+              <li className="flex items-center justify-between gap-2">
+                <span className="text-xs text-zinc-300">Step 1</span>
+                <button type="button" onClick={() => copy("g-bc", billerC)}
+                  className={"min-h-[40px] whitespace-nowrap rounded-lg border px-3 py-1.5 text-sm font-semibold " + (copiedKey === "g-bc" ? "border-emerald-400 bg-emerald-400 text-zinc-950" : "border-zinc-600 text-zinc-100 active:bg-zinc-800")}>
+                  {copiedKey === "g-bc" ? "✅ 已复制" : "一键复制 Biller " + billerC}
+                </button>
+              </li>
+              <li className="flex items-center justify-between gap-2">
+                <span className="text-xs text-zinc-300">Step 2</span>
+                <button type="button" onClick={() => copy("g-r1", ref1)}
+                  className={"min-h-[40px] whitespace-nowrap rounded-lg border px-3 py-1.5 font-mono text-sm font-semibold " + (copiedKey === "g-r1" ? "border-emerald-400 bg-emerald-400 text-zinc-950" : "border-zinc-600 text-zinc-100 active:bg-zinc-800")}>
+                  {copiedKey === "g-r1" ? "✅ 已复制" : "一键复制 " + ref1}
+                </button>
+              </li>
+              <li className="flex items-center justify-between gap-2">
+                <span className="text-xs text-zinc-300">Step 3</span>
+                <span className="text-sm text-zinc-100">手动打开 TNG，搜索 JomPAY</span>
+              </li>
+            </ol>
+            {IN_WECHAT && <p className="mt-2 text-xs text-amber-200">请先切回手机桌面再打开 TNG。</p>}
+          </div>
+        )}
+
+        <div className="mt-2 flex items-center justify-between gap-2 text-xs text-zinc-400">
+          <span className="min-w-0">🏢 线下：A3 楼 711 室</span>
+          <button type="button" onClick={() => setEditBiller(!editBiller)} className="shrink-0 rounded-lg border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 active:bg-zinc-800">改 Biller Code</button>
+        </div>
+        {editBiller && (
+          <div className="mt-2">
+            <label htmlFor="biller-in" className={labelCls}>Biller Code（以你的账单为准）</label>
+            <input id="biller-in" type="text" inputMode="numeric" value={biller} onChange={(ev) => setBiller(ev.target.value.replace(/[^0-9]/g, ""))} className={inputCls + " font-mono tnum"} placeholder={BILLER_CODE} />
+          </div>
+        )}
+
+        <div className="mt-3 flex items-start gap-2 rounded-xl border border-emerald-400/30 bg-emerald-400/5 px-3 py-2">
+          <span className="mt-0.5 shrink-0 text-emerald-300"><I.Shield size={18} /></span>
+          <p className="text-xs leading-relaxed text-zinc-200">🔒 安全声明：本工具仅提供官方账单信息格式化辅助，不接触任何支付接口或账户隐私。转账全流程在您本人的手机银行/电子钱包内完成，资金由 PayNet 直达学校对公账户。</p>
+        </div>
+      </Card>
+
+      {toast && (
+        <div role="status" aria-live="polite" style={{ position: "fixed", left: 16, right: 16, bottom: "max(16px, env(safe-area-inset-bottom))", zIndex: 60 }}
+          className="mx-auto max-w-sm rounded-xl border border-emerald-400/50 bg-zinc-900 px-4 py-3 text-center text-sm font-medium text-zinc-50 shadow-lg">{toast}</div>
+      )}
+
+      {/* 方式二：备用直通 */}
+      <Card className="!p-3.5">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-zinc-400">方式二 · 备用</p>
+            <p className="text-sm text-zinc-200">直达电费缴费页</p>
+          </div>
+          <button type="button" onClick={() => setEditLink(!editLink)} aria-label="设置直达链接"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-zinc-700 text-zinc-300 active:bg-zinc-800"><I.Pencil size={15} /></button>
+        </div>
+        <a href={portalHref} target="_blank" rel="noopener noreferrer"
+          className="mt-3 flex min-h-[48px] items-center justify-center gap-2 rounded-xl bg-amber-400 px-4 py-2.5 text-sm font-bold text-zinc-950 active:bg-amber-300">
+          🔌 直通电费缴费页
+        </a>
+        {!deepUrl && <p className="mt-2 text-xs text-zinc-400">未设置链接时打开学校主页，点笔图标可填写。</p>}
+        {editLink && (
+          <div className="mt-3">
+            <label htmlFor="deep-url" className={labelCls}>电费缴费页链接（深层地址）</label>
+            <input id="deep-url" type="url" inputMode="url" autoCapitalize="none" autoCorrect="off" value={deep}
+              onChange={(e) => setDeep(e.target.value)} className={inputCls} placeholder="https://" />
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+/* ------------------------------ 5. 场景化交通倒计时（3 行卡片 + 指南抽屉） ------------------------------ */
+/* 参考时刻表，以校方与 ERL 官方最新公告为准 */
+const T_SHUTTLE_WD = ["07:30", "08:00", "08:30", "09:00", "10:00", "12:00", "13:00", "15:00", "17:00", "18:00", "19:30", "21:00", "22:00"];
+const T_SHUTTLE_WE = ["09:00", "11:00", "14:00", "17:00", "20:00", "22:00"];
+const T_CITY_WD = every(5, 30, 23, 30, 30);
+const T_CITY_WE = every(6, 0, 23, 30, 45);
+const T_AIR_WD = every(5, 45, 23, 15, 30);
+const T_AIR_WE = every(6, 15, 23, 15, 45);
+function urgency(secs) {
+  if (secs < 300) return "text-red-300";
+  if (secs < 900) return "text-amber-300";
+  return "text-emerald-300";
+}
+const isWeekend = (dow) => dow === 0 || dow === 6;
+
+const SCENES = [
+  {
+    key: "station", emoji: "🚌", title: "去火车站 / 蹭接驳车", spot: "正门警卫室上车 → Salak Tinggi ERL 站",
+    sched: (dow) => (isWeekend(dow) ? T_SHUTTLE_WE : T_SHUTTLE_WD), wd: T_SHUTTLE_WD, we: T_SHUTTLE_WE,
+    fare: "校内接驳按校方安排，票价/是否收费以公告为准。",
+  },
+  {
+    key: "city", emoji: "🚅", title: "去市区逛街", spot: "Salak Tinggi 站 → KL Sentral",
+    sched: (dow) => (isWeekend(dow) ? T_CITY_WE : T_CITY_WD), wd: T_CITY_WD, we: T_CITY_WE,
+    fare: "ERL Transit 单程票价以 ERL 官网/售票机为准；可用 Touch 'n Go 卡或 eWallet 的相关功能。",
+  },
+  {
+    key: "air", emoji: "✈️", title: "去机场坐飞机", spot: "Salak Tinggi 站 → KLIA 1 / KLIA 2",
+    sched: (dow) => (isWeekend(dow) ? T_AIR_WE : T_AIR_WD), wd: T_AIR_WD, we: T_AIR_WE,
+    fare: "ERL 到 KLIA 1 / KLIA 2 的票价以 ERL 官网为准；国际航班建议提前 3 小时到机场。",
+  },
+];
+
+function leftText(secs) {
+  const m = Math.floor(secs / 60);
+  if (m < 1) return "马上发车";
+  if (m >= 60) return "还有 " + Math.floor(m / 60) + " 小时 " + (m % 60) + " 分钟发车";
+  return "还有 " + m + " 分钟发车";
+}
+
+function SceneCard({ sc, now }) {
+  const sec = Math.floor(now.getTime() / 1000);
+  const list = useMemo(() => upcoming(sc.sched, now, 2), [sec, sc]);
+  const first = list[0];
+  const second = list[1];
+  const today = sc.sched(now.getDay());
+  const isLast = !!first && first.off === 0 && first.t === today[today.length - 1];
+  const hot = !!first && first.off === 0 && first.secs < 600;
+  return (
+    <div className={"rounded-xl border px-3 py-2.5 " + (hot ? "border-orange-400 bg-orange-400/10" : "border-zinc-800 bg-zinc-950")}
+      data-scene={sc.key}>
+      <div className="flex items-center justify-between gap-2">
+        <p className="min-w-0 truncate text-sm font-semibold text-zinc-50"><span aria-hidden="true">{sc.emoji}</span> {sc.title}</p>
+        {first ? (
+          <p className={"tnum shrink-0 text-sm font-bold " + (hot ? "text-orange-300" : urgency(first.secs))}>
+            {first.off > 0 ? "明早 " + first.t : leftText(first.secs)}
+          </p>
+        ) : <p className="shrink-0 text-sm text-zinc-400">暂无班次</p>}
+      </div>
+      <p className="mt-0.5 truncate text-xs text-zinc-400">{sc.spot}</p>
+      <p className="tnum mt-0.5 flex flex-wrap gap-x-3 text-xs text-zinc-300">
+        {first ? <span>下一班 {first.off > 0 ? "明天 " : ""}{first.t}{second ? " · 再下一班 " + (second.off > 0 ? "明天 " : "") + second.t : ""}</span> : null}
+        {hot && <span className="font-semibold text-orange-300">⚠️ 快发车了，抓紧出门</span>}
+        {isLast && !hot && <span className="font-semibold text-amber-300">🔔 今天的末班</span>}
+        {first && first.off > 0 && <span className="text-amber-300">今天已收班</span>}
+      </p>
+    </div>
+  );
+}
+
+function TransitGuide({ onClose }) {
+  const [day, setDay] = useState(isWeekend(new Date().getDay()) ? "we" : "wd");
+  return (
+    <div className="mb-3 rounded-xl border border-sky-400/40 bg-zinc-950 p-3" role="region" aria-label="交通指南">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-semibold text-zinc-50">ℹ️ 出行指南</p>
+        <button type="button" onClick={onClose} aria-label="收起指南"
+          className="flex h-8 w-8 items-center justify-center rounded-lg border border-zinc-700 text-zinc-300 active:bg-zinc-800"><I.X size={14} /></button>
+      </div>
+      <p className="mt-2 text-xs font-semibold text-sky-300">票价</p>
+      <ul className="mt-1 list-disc space-y-1 pl-5 text-xs leading-relaxed text-zinc-300">
+        {SCENES.map((s) => <li key={s.key}>{s.emoji} {s.fare}</li>)}
+      </ul>
+      <p className="mt-3 text-xs font-semibold text-sky-300">乘车贴士</p>
+      <ul className="mt-1 list-disc space-y-1 pl-5 text-xs leading-relaxed text-zinc-300">
+        <li>接驳车在正门警卫室附近上车，提前 5 分钟到，别踩点。</li>
+        <li>ERL 站内检票后看清楚是去 KL Sentral 还是 KLIA 的方向。</li>
+        <li>雷阵雨天出行带伞，末班前留足缓冲时间。</li>
+        <li>倒计时用的是你手机当前时间，遇到节假日加班/停班请以公告为准。</li>
+      </ul>
+      <div className="mt-3 flex items-center justify-between gap-2">
+        <p className="text-xs font-semibold text-sky-300">完整班次表（参考）</p>
+        <div className="inline-flex overflow-hidden rounded-lg border border-zinc-700 text-xs">
+          <button type="button" onClick={() => setDay("wd")} aria-pressed={day === "wd"}
+            className={"min-h-[32px] px-3 py-1 " + (day === "wd" ? "bg-sky-400 font-semibold text-zinc-950" : "bg-zinc-950 text-zinc-300")}>工作日</button>
+          <button type="button" onClick={() => setDay("we")} aria-pressed={day === "we"}
+            className={"min-h-[32px] px-3 py-1 " + (day === "we" ? "bg-sky-400 font-semibold text-zinc-950" : "bg-zinc-950 text-zinc-300")}>周末</button>
+        </div>
+      </div>
+      {SCENES.map((s) => (
+        <div key={s.key} className="mt-2">
+          <p className="text-xs font-semibold text-zinc-200">{s.emoji} {s.title}</p>
+          <p className="tnum mt-1 flex flex-wrap gap-1">
+            {(day === "wd" ? s.wd : s.we).map((t) => <span key={t} className="rounded border border-zinc-700 px-1.5 py-0.5 text-[11px] text-zinc-200">{t}</span>)}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TransitCard({ now }) {
+  const [guide, setGuide] = useState(false);
+  return (
+    <Card>
+      <CardTitle icon={<I.Bus size={18} />} title="出行 · 还有多久发车" tone="bg-emerald-400/15 text-emerald-300"
+        right={
+          <button type="button" onClick={() => setGuide(!guide)} aria-expanded={guide}
+            className={"inline-flex min-h-[36px] shrink-0 items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-semibold " + (guide ? "border-sky-400 bg-sky-400/15 text-sky-100" : "border-zinc-600 text-zinc-100 active:bg-zinc-800")}>
+            ℹ️ 指南
+          </button>
+        } />
+      {guide && <TransitGuide onClose={() => setGuide(false)} />}
+      <div className="flex flex-col gap-2">
+        {SCENES.map((sc) => <SceneCard key={sc.key} sc={sc} now={now} />)}
+      </div>
+      <p className="mt-2 text-xs text-zinc-400">班次为参考，以校方公告为准。</p>
+    </Card>
+  );
+}
+
+/* ------------------------------ 3. 校园交互地图：数据层（楼宇 → 楼层 → 标签，可导出/导入 JSON） ------------------------------ */
+const FLOORS = ["G", "1", "2", "3", "4", "5", "6"];
+const floorLabel = (f) => (f === "G" ? "G 层" : f + " 层");
+
+const KINDS = [
+  { key: "room", label: "教室", cls: "border-sky-400/50 bg-sky-400/10 text-sky-200" },
+  { key: "study", label: "自习室", cls: "border-violet-400/50 bg-violet-400/10 text-violet-200" },
+  { key: "shop", label: "商铺", cls: "border-orange-400/50 bg-orange-400/10 text-orange-200" },
+  { key: "printer", label: "打印机", cls: "border-emerald-400/50 bg-emerald-400/10 text-emerald-200" },
+  { key: "microwave", label: "微波炉", cls: "border-amber-400/50 bg-amber-400/10 text-amber-200" },
+  { key: "other", label: "其他", cls: "border-zinc-500 bg-zinc-800 text-zinc-200" },
+];
+const kindOf = (k) => KINDS.find((x) => x.key === k) || KINDS[KINDS.length - 1];
+
+/* 开放时间为参考信息；楼层描述与标签默认留空，由同学们补充 */
+const OPEN_ACAD = "上课日 07:30–22:00，以公告为准（参考，以现场公告为准）";
+const TIP_ACAD = "先在地图上确认楼号再出门；各楼的楼层与教室请在“楼层”里补充。";
+const OPEN_DORM = "门禁与访客时间以宿管规定为准（参考，以现场公告为准）";
+const TIP_DORM = "报修请用“二楼”里的 ASKA 模板，紧急情况拨二楼里的 Hotline。";
+const mk = (id, zh, en, emoji, group, hours, tips) => ({ id: id, zh: zh, en: en, emoji: emoji, group: group, hours: hours, tips: tips });
+
+const BUILDINGS = [
+  mk("aud", "礼堂", "Auditorium", "🎭", "教学区", "活动与讲座期间开放（参考，以现场公告为准）", "大型讲座和迎新活动常在这里，提前看公告。"),
+  mk("a1", "A1 教学楼", "Academic Block A1", "🎓", "教学区", OPEN_ACAD, TIP_ACAD),
+  mk("a2", "A2 教学楼", "Academic Block A2", "🎓", "教学区", OPEN_ACAD, TIP_ACAD),
+  mk("a3", "A3 主楼 · 图书馆", "Block A3 Main / Library", "📚", "教学区", "图书馆 08:00–22:00，考试周可能延长（参考，以现场公告为准）", "A3 是主楼，图书馆在其中；保持安静，讨论区与自习舱先到先得。"),
+  mk("a4", "A4 教学楼", "Academic Block A4", "🎓", "教学区", OPEN_ACAD, TIP_ACAD),
+  mk("a5", "A5 教学楼", "Academic Block A5", "🎓", "教学区", OPEN_ACAD, TIP_ACAD),
+  mk("ly1", "LY1 宿舍楼", "Lyceum LY1", "🏢", "LY 宿舍群", OPEN_DORM, TIP_DORM),
+  mk("ly2", "LY2 宿舍楼", "Lyceum LY2", "🏢", "LY 宿舍群", OPEN_DORM, TIP_DORM),
+  mk("ly3", "LY3 第二食堂", "LY3 Canteen 2", "🍜", "公共与生活", "10:00–21:00，各档口时间不同（参考，以现场公告为准）", "凌云宿舍区的独立食堂，含档口和生活服务；底楼的商铺、各层设施请点楼层添加。"),
+  mk("ly4", "LY4 宿舍楼", "Lyceum LY4", "🏢", "LY 宿舍群", OPEN_DORM, TIP_DORM),
+  mk("ly5", "LY5 宿舍楼", "Lyceum LY5", "🏢", "LY 宿舍群", OPEN_DORM, TIP_DORM),
+  mk("ly6", "LY6 宿舍楼", "Lyceum LY6", "🏢", "LY 宿舍群", OPEN_DORM, TIP_DORM),
+  mk("ly7", "LY7 宿舍楼", "Lyceum LY7", "🏢", "LY 宿舍群", OPEN_DORM, TIP_DORM),
+  mk("ly8", "LY8 宿舍楼", "Lyceum LY8", "🏢", "LY 宿舍群", OPEN_DORM, TIP_DORM),
+  mk("ly9", "LY9 宿舍楼", "Lyceum LY9", "🏢", "LY 宿舍群", OPEN_DORM, TIP_DORM),
+  mk("d1", "D1 宿舍", "Residence D1", "🏠", "D 宿舍群", OPEN_DORM, TIP_DORM),
+  mk("d2", "D2 宿舍", "Residence D2", "🏠", "D 宿舍群", OPEN_DORM, TIP_DORM),
+  mk("d3", "D3 宿舍", "Residence D3", "🏠", "D 宿舍群", OPEN_DORM, TIP_DORM),
+  mk("d4", "D4 宿舍", "Residence D4", "🏠", "D 宿舍群", OPEN_DORM, TIP_DORM),
+  mk("d5", "D5 宿舍", "Residence D5", "🏠", "D 宿舍群", OPEN_DORM, TIP_DORM),
+  mk("d6", "D6 第一食堂", "D6 Canteen 1", "🍛", "公共与生活", "早 07:00–09:30，午 11:30–14:00，晚 17:30–20:00（参考，以现场公告为准）", "第一食堂在 D 区宿舍群旁；饭点人多，避开 12:00–12:30 更快。"),
+  mk("b1", "B1 学生活动中心", "B1 Student Activity Centre", "🏛️", "公共与生活", "活动与社团办公时间以公告为准（参考）", "纯活动与社团中心，社团招新、活动报名和场地借用信息请看公告，也欢迎同学补充楼层设施。"),
+  mk("b2", "B2 文体中心", "B2 Sports & Culture Centre", "🏸", "文体", "06:30–22:00，场馆预约与课程优先（参考，以现场公告为准）", "紧邻体育场；具体场馆和预约方式请同学补充。"),
+  mk("stadium", "体育场", "Stadium", "🏟️", "文体", "06:00–22:00（参考，以现场公告为准）", "雷阵雨天室外场地会关闭，出门前先看天气。"),
+];
+
+function cleanStr(v, max) {
+  return typeof v === "string" ? v.replace(/[\r\n\t]+/g, " ").trim().slice(0, max) : "";
+}
+
+/* 导入时的严格清洗：只认已知楼宇与楼层，限制长度与数量 */
+function sanitizeMap(raw) {
+  const out = {};
+  let nb = 0, nt = 0;
+  const src = raw && typeof raw === "object" ? (raw.buildings && typeof raw.buildings === "object" ? raw.buildings : raw) : {};
+  BUILDINGS.forEach((b) => {
+    const s = src[b.id];
+    if (!s || typeof s !== "object") return;
+    const d = {};
+    if (typeof s.hours === "string") d.hours = cleanStr(s.hours, 200);
+    if (typeof s.tips === "string") d.tips = cleanStr(s.tips, 400);
+    if (s.fdesc && typeof s.fdesc === "object") {
+      const fd = {};
+      FLOORS.forEach((f) => { const t = cleanStr(s.fdesc[f], 120); if (t) fd[f] = t; });
+      if (Object.keys(fd).length) d.fdesc = fd;
+    }
+    if (s.floors && typeof s.floors === "object") {
+      const fl = {};
+      FLOORS.forEach((f) => {
+        const arr = Array.isArray(s.floors[f]) ? s.floors[f].slice(0, 120) : [];
+        const tags = [];
+        arr.forEach((t) => {
+          if (!t || typeof t !== "object") return;
+          const name = cleanStr(t.name, 40);
+          if (!name) return;
+          const kind = KINDS.some((k) => k.key === t.kind) ? t.kind : "other";
+          tags.push({ id: uid(), name: name, kind: kind, note: cleanStr(t.note, 300) });
+        });
+        if (tags.length) { fl[f] = tags; nt += tags.length; }
+      });
+      if (Object.keys(fl).length) d.floors = fl;
+    }
+    if (Object.keys(d).length) { out[b.id] = d; nb++; }
+  });
+  return { data: out, nb: nb, nt: nt };
+}
+
+function mergeMap(cur, inc) {
+  const out = { ...cur };
+  Object.keys(inc).forEach((id) => {
+    const a = cur[id] || {};
+    const b = inc[id];
+    const m = { ...a };
+    if (b.hours !== undefined) m.hours = b.hours;
+    if (b.tips !== undefined) m.tips = b.tips;
+    if (b.fdesc) m.fdesc = { ...(a.fdesc || {}), ...b.fdesc };
+    if (b.floors) {
+      const fl = { ...(a.floors || {}) };
+      Object.keys(b.floors).forEach((f) => {
+        const have = fl[f] || [];
+        const keys = {};
+        have.forEach((t) => { keys[t.name + "|" + t.kind] = true; });
+        const add = b.floors[f].filter((t) => !keys[t.name + "|" + t.kind]);
+        fl[f] = have.concat(add);
+      });
+      m.floors = fl;
+    }
+    out[id] = m;
+  });
+  return out;
+}
+
+function countTags(data) {
+  let n = 0;
+  Object.keys(data).forEach((id) => {
+    const fl = (data[id] && data[id].floors) || {};
+    Object.keys(fl).forEach((f) => { n += fl[f].length; });
+  });
+  return n;
+}
+
+function exportMapJson(data) {
+  const b = {};
+  Object.keys(data).forEach((id) => {
+    const r = data[id] || {};
+    const o = {};
+    if (r.hours !== undefined) o.hours = r.hours;
+    if (r.tips !== undefined) o.tips = r.tips;
+    if (r.fdesc) {
+      const fd = {};
+      Object.keys(r.fdesc).forEach((f) => { if (r.fdesc[f]) fd[f] = r.fdesc[f]; });
+      if (Object.keys(fd).length) o.fdesc = fd;
+    }
+    if (r.floors) {
+      o.floors = {};
+      Object.keys(r.floors).forEach((f) => {
+        if (r.floors[f].length) o.floors[f] = r.floors[f].map((t) => ({ name: t.name, kind: t.kind, note: t.note || "" }));
+      });
+    }
+    if (o.floors && !Object.keys(o.floors).length) delete o.floors;
+    if (Object.keys(o).length) b[id] = o;
+  });
+  return JSON.stringify({ app: "xmum-helper", version: 3, exportedAt: new Date().toISOString(), buildings: b }, null, 2);
+}
+
+function MapDataModal({ data, setData, onClose }) {
+  const [paste, setPaste] = useState("");
+  const [msg, setMsg] = useState(null);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [copiedKey, copy] = useCopy();
+  const json = useMemo(() => exportMapJson(data), [data]);
+  const n = countTags(data);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const doImport = (replace) => {
+    let raw;
+    try { raw = JSON.parse(paste); } catch (e) { setMsg({ ok: false, t: "这不是有效的 JSON，请确认完整粘贴了朋友导出的内容。" }); return; }
+    const r = sanitizeMap(raw);
+    if (r.nb === 0) { setMsg({ ok: false, t: "没有找到可用的楼宇数据。导出的 JSON 里应包含 buildings 字段。" }); return; }
+    setData(replace ? r.data : mergeMap(data, r.data));
+    setMsg({ ok: true, t: (replace ? "已覆盖为" : "已合并") + " " + r.nb + " 栋楼、" + r.nt + " 个标签。" });
+  };
+
+  const onFile = (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    if (f.size > 2 * 1024 * 1024) { setMsg({ ok: false, t: "文件过大，不像是地图数据。" }); return; }
+    const fr = new FileReader();
+    fr.onload = () => { setPaste(String(fr.result || "")); setMsg(null); };
+    fr.onerror = () => setMsg({ ok: false, t: "读取文件失败。" });
+    fr.readAsText(f);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center" role="dialog" aria-modal="true" aria-label="地图数据导出与导入">
+      <button type="button" aria-label="关闭" onClick={onClose} className="absolute inset-0 bg-black/70" />
+      <div className="sheet relative z-10 flex max-h-[92%] w-full max-w-xl flex-col overflow-hidden rounded-t-2xl border border-zinc-800 bg-zinc-900 sm:rounded-2xl"
+        style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
+        <div className="flex items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold text-zinc-50">地图数据 · 导入合并 / 导出</h2>
+            <p className="text-xs text-zinc-400">把你补充的信息发给朋友，也能导入朋友的</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="关闭"
+            className="flex h-10 w-10 items-center justify-center rounded-lg border border-zinc-700 text-zinc-200 active:bg-zinc-800"><I.X size={18} /></button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+          <h3 className="text-sm font-semibold text-zinc-100">导出（当前 {n} 个标签）</h3>
+          <textarea id="map-export" readOnly rows={5} value={json} onFocus={(e) => e.target.select()}
+            className={inputCls + " mt-2 resize-y font-mono text-xs leading-relaxed"} aria-label="导出的地图 JSON" />
+          <button type="button" onClick={() => copy("json", json)}
+            className={"mt-2 flex min-h-[46px] w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-base font-semibold " +
+              (copiedKey === "json" ? "bg-emerald-400 text-zinc-950" : "bg-sky-400 text-zinc-950 active:bg-sky-300")}>
+            {copiedKey === "json" ? <><I.Check size={18} /> 已复制</> : <><I.Copy size={18} /> 复制 JSON，发给朋友</>}
+          </button>
+
+          <div className="my-5 flex items-center gap-3 text-xs text-zinc-400">
+            <span className="h-px flex-1 bg-zinc-800" />导入<span className="h-px flex-1 bg-zinc-800" />
+          </div>
+
+          <label htmlFor="map-import" className={labelCls}>粘贴朋友导出的 JSON</label>
+          <textarea id="map-import" rows={5} value={paste} onChange={(e) => { setPaste(e.target.value); setMsg(null); }}
+            className={inputCls + " resize-y font-mono text-xs leading-relaxed"} placeholder={'{ "app": "xmum-helper", "buildings": { ... } }'} />
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <label htmlFor="map-file" className="inline-flex min-h-[40px] cursor-pointer items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-100 active:bg-zinc-800">
+              <I.Upload size={15} /> 选择 .json 文件
+            </label>
+            <input id="map-file" type="file" accept=".json,application/json,text/plain" className="sr-only" onChange={onFile} />
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-2.5">
+            <button type="button" disabled={!paste.trim()} onClick={() => doImport(false)}
+              className={"min-h-[46px] rounded-xl px-3 py-2.5 text-sm font-semibold " + (paste.trim() ? "bg-emerald-400 text-zinc-950 active:bg-emerald-300" : "cursor-not-allowed bg-zinc-800 text-zinc-500")}>合并导入（推荐）</button>
+            <button type="button" disabled={!paste.trim()} onClick={() => doImport(true)}
+              className={"min-h-[46px] rounded-xl border px-3 py-2.5 text-sm font-semibold " + (paste.trim() ? "border-zinc-500 text-zinc-100 active:bg-zinc-800" : "cursor-not-allowed border-zinc-800 text-zinc-600")}>覆盖我的数据</button>
+          </div>
+          {msg && <p role="status" className={"mt-3 rounded-lg border px-3 py-2 text-sm leading-relaxed " + (msg.ok ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-200" : "border-red-400/40 bg-red-400/10 text-red-200")}>{msg.t}</p>}
+          <p className="mt-3 text-xs leading-relaxed text-zinc-400">合并会保留你已有的标签，只追加朋友多出来的；导入内容会被检查并限制长度，不会执行任何代码。</p>
+
+          <div className="mt-5 border-t border-zinc-800 pt-4">
+            {!confirmClear ? (
+              <button type="button" onClick={() => setConfirmClear(true)} className="rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-300 active:bg-zinc-800">清空我补充的所有地图信息</button>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm text-red-200">确定清空？此操作无法撤销。</span>
+                <button type="button" onClick={() => { setData({}); setConfirmClear(false); setMsg({ ok: true, t: "已清空。" }); }} className="rounded-lg bg-red-400 px-3 py-2 text-sm font-semibold text-zinc-950 active:bg-red-300">确定清空</button>
+                <button type="button" onClick={() => setConfirmClear(false)} className="rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-200 active:bg-zinc-800">取消</button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+/* ------------------------------ 3. 校园交互沙盘：纯 SVG 俯瞰 2.5D 积木地图（viewBox 800×650） ------------------------------ */
+const MAP3_CSS = [
+  ".b3{cursor:pointer;outline:none;-webkit-tap-highlight-color:transparent}",
+  ".b3 .roof{transition:transform .18s ease,filter .18s ease}",
+  ".b3:hover .roof,.b3:focus-visible .roof,.b3-sel .roof{transform:translateY(-6px);filter:drop-shadow(0 0 9px var(--glow))}",
+  ".b3:active .roof{transform:translateY(-2px)}",
+  "@keyframes rippleMove{0%,100%{transform:translateX(0);opacity:.85}50%{transform:translateX(10px);opacity:.45}}",
+  ".ripple{animation:rippleMove 5s ease-in-out infinite}.ripple2{animation-delay:-2.2s}",
+  "@media (prefers-reduced-motion:reduce){.b3 .roof{transition:none}.ripple{animation:none}}",
+].join("\n");
+
+const C3 = {
+  teach: { top: "#8fb4be", hi: "#b4d2da", wall: "#58798a", edge: "#2f4c5a", glow: "rgba(125,211,252,0.85)" },
+  gold: { top: "#e8c47c", hi: "#f6dfa8", wall: "#b88a45", edge: "#7a5822", glow: "rgba(253,224,71,0.85)" },
+  orange: { top: "#ebaa7a", hi: "#f7cba6", wall: "#b87240", edge: "#7a4524", glow: "rgba(251,146,60,0.85)" },
+  purple: { top: "#b9a9de", hi: "#d6caf0", wall: "#7f6fab", edge: "#4c3f78", glow: "rgba(196,181,253,0.85)" },
+  green: { top: "#8ec79c", hi: "#b5e0bf", wall: "#58906a", edge: "#2f5a3e", glow: "rgba(134,239,172,0.85)" },
+};
+
+function Tree3({ x, y, r }) {
+  const s = r || 14;
+  return (
+    <g pointerEvents="none">
+      <ellipse cx={x + 4} cy={y + s * 0.9} rx={s * 0.9} ry={s * 0.35} fill="#000" opacity="0.28" />
+      <rect x={x - 2.5} y={y + s * 0.3} width="5" height={s * 0.7} rx="2" fill="#7c4a2a" />
+      <circle cx={x} cy={y} r={s} fill="#3f9b66" stroke="#1d5c3b" strokeWidth="2.5" />
+      <circle cx={x - s * 0.3} cy={y - s * 0.3} r={s * 0.45} fill="#6fcf97" opacity="0.9" />
+    </g>
+  );
+}
+
+/* 积木：落影 + 前墙（暗面）+ 屋顶（亮面，悬停时上浮）；顶面 (x,y,w,d)，墙高 h */
+function Block3({ id, zh, x, y, w, d, h, c, selected, onPick, windows, extraTop, children }) {
+  const go = () => onPick(id);
+  const wins = [];
+  if (windows) {
+    const n = Math.max(2, Math.floor((w - 16) / 26));
+    const gap = (w - 16) / n;
+    for (let i = 0; i < n; i++) wins.push(<rect key={i} x={x + 8 + i * gap + 4} y={y + d + 6} width={gap - 8} height={Math.max(8, h - 12)} rx="3" fill="rgba(255,255,255,0.30)" />);
+  }
+  const top = extraTop || 0;
+  return (
+    <g className={"b3" + (selected ? " b3-sel" : "")} style={{ "--glow": c.glow }} role="button" tabIndex={0}
+      aria-label={"查看 " + zh + " 详情"} aria-pressed={selected}
+      onClick={go} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } }}>
+      <rect x={x - 14} y={y - 14 - top} width={w + 28} height={d + h + 28 + top} rx="16" fill="#000" fillOpacity="0" pointerEvents="all" />
+      <rect x={x + 10} y={y + 12} width={w} height={d + h} rx="14" fill="#000" opacity="0.30" pointerEvents="none" />
+      <rect x={x} y={y + d - 14} width={w} height={h + 14} rx="10" fill={c.wall} stroke={c.edge} strokeWidth="3" pointerEvents="none" />
+      {wins}
+      <g className="roof" pointerEvents="none">
+        <rect x={x - 5} y={y} width={w + 10} height={d} rx="16" fill={c.top} stroke={c.edge} strokeWidth="3.5" />
+        <rect x={x + 8} y={y + 8} width={w - 16} height={Math.max(10, d * 0.32)} rx="9" fill={c.hi} opacity="0.55" />
+        {children}
+        {selected && <rect x={x - 9} y={y - 4} width={w + 18} height={d + 8} rx="18" fill="none" stroke="#38bdf8" strokeWidth="4" strokeDasharray="10 7" />}
+      </g>
+    </g>
+  );
+}
+
+function RoofText({ x, y, t, size, fill }) {
+  return <text x={x} y={y} textAnchor="middle" fontSize={size || 28} fontWeight="800" fill={fill || "#1f2937"} pointerEvents="none">{t}</text>;
+}
+function GroundLabel({ x, y, t, size }) {
+  return (
+    <text x={x} y={y} textAnchor="middle" fontSize={size || 24} fontWeight="700" fill="#f4f4f5" stroke="#0b1510" strokeWidth="5"
+      strokeLinejoin="round" paintOrder="stroke" pointerEvents="none">{t}</text>
+  );
+}
+
+function CampusMap({ selected, onPick }) {
+  const P = (id) => selected === id;
+  const nameOf = (id) => (BUILDINGS.find((b) => b.id === id) || { zh: id }).zh;
+  const road = (dd, k) => (
+    <g key={k} pointerEvents="none">
+      <path d={dd} fill="none" stroke="#2f3b33" strokeWidth="24" strokeLinecap="round" strokeLinejoin="round" />
+      <path d={dd} fill="none" stroke="#e7e5e4" strokeWidth="17" strokeLinecap="round" strokeLinejoin="round" opacity="0.92" />
+    </g>
+  );
+  const roads = [
+    "M20 480 L780 480",
+    "M400 206 L400 256",
+    "M400 456 L400 592",
+    "M270 318 C 230 290 200 256 175 224",
+    "M262 352 C 220 356 170 364 125 372",
+    "M530 318 C 570 290 600 256 625 224",
+    "M538 352 C 580 356 630 364 675 372",
+    "M262 410 C 232 436 215 456 215 480",
+    "M538 410 C 568 436 585 456 585 480",
+    "M305 480 L305 538",
+    "M520 480 L520 540",
+    "M685 450 L685 480",
+    "M685 480 L685 496",
+  ];
+  const A = (id, x, y, label) => (
+    <Block3 key={id} id={id} zh={nameOf(id)} x={x} y={y} w={130} d={70} h={26} c={C3.teach} selected={P(id)} onPick={onPick} windows>
+      <RoofText x={x + 65} y={y + 46} t={label} />
+    </Block3>
+  );
+  return (
+    <div className="overflow-hidden rounded-3xl border border-zinc-800" style={{ background: "#14261b" }}>
+      <style>{MAP3_CSS}</style>
+      <svg viewBox="0 0 800 650" className="block h-auto w-full" role="group" aria-label="校园俯瞰沙盘地图" style={{ width: "100%", height: "auto" }}>
+        <defs>
+          <radialGradient id="grass3" cx="50%" cy="38%" r="75%">
+            <stop offset="0%" stopColor="#24432f" />
+            <stop offset="100%" stopColor="#14261b" />
+          </radialGradient>
+          <radialGradient id="water3" cx="42%" cy="35%" r="70%">
+            <stop offset="0%" stopColor="#bfeaff" />
+            <stop offset="55%" stopColor="#5db9e6" />
+            <stop offset="100%" stopColor="#2f86b8" />
+          </radialGradient>
+        </defs>
+        <rect x="0" y="0" width="800" height="650" fill="url(#grass3)" />
+        {[[120, 70], [700, 60], [60, 620], [760, 330], [420, 20]].map((p, i) => (
+          <ellipse key={i} cx={p[0]} cy={p[1]} rx="70" ry="26" fill="#2d5238" opacity="0.35" pointerEvents="none" />
+        ))}
+
+        {/* 路网：中轴迎宾大道、环湖步道、通往两侧教学楼的林荫路、东西主干道 */}
+        {roads.map((dd, i) => road(dd, i))}
+        <g pointerEvents="none">
+          <ellipse cx="400" cy="356" rx="142" ry="102" fill="none" stroke="#2f3b33" strokeWidth="22" />
+          <ellipse cx="400" cy="356" rx="142" ry="102" fill="none" stroke="#e7e5e4" strokeWidth="15" opacity="0.92" />
+          <path d="M20 480 L780 480" fill="none" stroke="#a8a29e" strokeWidth="2" strokeDasharray="14 12" />
+          <path d="M400 460 L400 592" fill="none" stroke="#a8a29e" strokeWidth="2" strokeDasharray="14 12" />
+        </g>
+
+        {/* 中央景观湖 */}
+        <g pointerEvents="none">
+          <path d="M290 346 C 288 300 335 276 400 276 C 468 276 512 305 510 350 C 508 400 462 436 400 438 C 335 436 292 400 290 346 Z"
+            fill="url(#water3)" stroke="#1f6f99" strokeWidth="5" />
+          <path className="ripple" d="M326 370 q 14 -10 28 0 t 28 0 t 28 0" fill="none" stroke="#e8f7ff" strokeWidth="4" strokeLinecap="round" />
+          <path className="ripple ripple2" d="M370 405 q 14 -10 28 0 t 28 0 t 28 0" fill="none" stroke="#e8f7ff" strokeWidth="4" strokeLinecap="round" />
+          <circle cx="446" cy="326" r="22" fill="#9bd36a" stroke="#4d7c2a" strokeWidth="4" />
+          <text x="446" y="335" textAnchor="middle" fontSize="24">🎵</text>
+          <GroundLabel x="352" y="332" t="中央湖" size={24} />
+        </g>
+
+        {/* 树 */}
+        {[[48, 200], [30, 430], [250, 110], [330, 240], [470, 240], [545, 110], [772, 190], [770, 440], [230, 500], [570, 510], [360, 600], [450, 610], [90, 560], [20, 300], [782, 290]].map((p, i) => <Tree3 key={i} x={p[0]} y={p[1]} r={13 + (i % 3) * 2} />)}
+
+        {/* 东西两侧教学楼 */}
+        {A("a2", 110, 120, "A2")}
+        {A("a1", 60, 260, "A1")}
+        {A("a4", 560, 120, "A4")}
+        {A("a5", 610, 260, "A5")}
+
+        {/* 礼堂（西侧）*/}
+        <Block3 id="aud" zh={nameOf("aud")} x={50} y={380} w={120} d={60} h={26} c={C3.purple} selected={P("aud")} onPick={onPick} windows>
+          <path d="M70 410 A 40 26 0 0 1 150 410 Z" fill="#d6caf0" stroke="#4c3f78" strokeWidth="3" />
+          <RoofText x={110} y={430} t="礼堂" size={24} />
+        </Block3>
+
+        {/* B1 学生活动中心 */}
+        <Block3 id="b1" zh={nameOf("b1")} x={50} y={510} w={150} d={62} h={26} c={C3.orange} selected={P("b1")} onPick={onPick} windows>
+          <text x={70} y={546} fontSize="26" pointerEvents="none">🏛️</text>
+          <RoofText x={140} y={540} t="B1" size={28} />
+          <RoofText x={125} y={564} t="学生活动中心" size={20} />
+        </Block3>
+
+        {/* B2 文体中心 */}
+        <Block3 id="b2" zh={nameOf("b2")} x={228} y={538} w={150} d={52} h={24} c={C3.green} selected={P("b2")} onPick={onPick} windows>
+          <RoofText x={303} y={573} t="B2 文体中心" size={22} />
+        </Block3>
+
+        {/* 操场 */}
+        <g className={"b3" + (P("stadium") ? " b3-sel" : "")} style={{ "--glow": C3.green.glow }} role="button" tabIndex={0}
+          aria-label={"查看 " + nameOf("stadium") + " 详情"} aria-pressed={P("stadium")}
+          onClick={() => onPick("stadium")} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPick("stadium"); } }}>
+          <rect x="420" y="526" width="200" height="104" rx="30" fill="#000" fillOpacity="0" pointerEvents="all" />
+          <ellipse cx="530" cy="594" rx="90" ry="38" fill="#5b3f2e" pointerEvents="none" />
+          <g className="roof" pointerEvents="none">
+            <ellipse cx="530" cy="582" rx="90" ry="38" fill="#c79470" stroke="#6b4429" strokeWidth="3.5" />
+            <ellipse cx="530" cy="582" rx="70" ry="27" fill="#4f9a62" stroke="#e9f7ec" strokeWidth="2.5" />
+            <line x1="530" y1="556" x2="530" y2="608" stroke="#e9f7ec" strokeWidth="2.5" />
+            <RoofText x={530} y={591} t="操场" size={24} fill="#f4fff6" />
+          </g>
+        </g>
+
+        {/* 东侧上：LY3 第二食堂（凌云宿舍区） */}
+        <Block3 id="ly3" zh={nameOf("ly3")} x={625} y={386} w={120} d={54} h={24} c={C3.orange} selected={P("ly3")} onPick={onPick} windows>
+          <text x={655} y={420} fontSize="24" pointerEvents="none">🍜</text>
+          <RoofText x={712} y={417} t="LY3" size={24} />
+          <RoofText x={685} y={433} t="二饭" size={16} />
+        </Block3>
+
+        {/* 东侧下：D6 第一食堂（D 区宿舍群旁） */}
+        <Block3 id="d6" zh={nameOf("d6")} x={625} y={496} w={120} d={54} h={24} c={C3.orange} selected={P("d6")} onPick={onPick} windows>
+          <text x={655} y={530} fontSize="24" pointerEvents="none">🍛</text>
+          <RoofText x={710} y={527} t="D6" size={24} />
+          <RoofText x={685} y={543} t="一饭" size={16} />
+        </Block3>
+
+        {/* 宿舍区：只作天际线背景，不可点击 */}
+        <g aria-hidden="true" pointerEvents="none" opacity="0.55">
+          {[640, 672, 704, 736].map((hx) => (
+            <g key={hx}>
+              <rect x={hx} y={600} width="26" height="22" rx="4" fill="rgba(255,255,255,0.10)" stroke="rgba(255,255,255,0.28)" strokeWidth="2" />
+              <rect x={hx - 2} y={594} width="30" height="10" rx="5" fill="rgba(255,255,255,0.16)" stroke="rgba(255,255,255,0.28)" strokeWidth="2" />
+            </g>
+          ))}
+          <text x="705" y="592" textAnchor="middle" fontSize="20" fontWeight="700" fill="rgba(255,255,255,0.75)">🏠 宿舍群 (D/LY)</text>
+        </g>
+
+        {/* A3 主楼 · 图书馆：中轴顶端，最大体量，带钟楼 */}
+        <Block3 id="a3" zh={nameOf("a3")} x={290} y={70} w={220} d={100} h={36} c={C3.gold} selected={P("a3")} onPick={onPick} windows extraTop={70}>
+          <rect x={378} y={32} width="44" height="62" rx="6" fill="#f3dca6" stroke="#7a5822" strokeWidth="3.5" />
+          <polygon points="370,34 400,2 430,34" fill="#c8553d" stroke="#6e2a1a" strokeWidth="3.5" strokeLinejoin="round" />
+          <circle cx="400" cy="58" r="13" fill="#fff8e7" stroke="#7a5822" strokeWidth="3" />
+          <path d="M400 49 v9 l6 4" fill="none" stroke="#7a5822" strokeWidth="3" strokeLinecap="round" />
+          <text x="340" y="146" textAnchor="middle" fontSize="30" pointerEvents="none">📚</text>
+          <RoofText x={460} y={146} t="A3" size={30} />
+        </Block3>
+        <GroundLabel x={400} y={238} t="A3 主楼 · 图书馆" size={24} />
+
+        {/* 南门与指北针 */}
+        <g pointerEvents="none">
+          <rect x="372" y="596" width="9" height="26" rx="3" fill="#f4f4f5" stroke="#18181b" strokeWidth="2.5" />
+          <rect x="419" y="596" width="9" height="26" rx="3" fill="#f4f4f5" stroke="#18181b" strokeWidth="2.5" />
+          <rect x="366" y="590" width="68" height="12" rx="6" fill="#e0614f" stroke="#18181b" strokeWidth="2.5" />
+          <GroundLabel x={400} y={642} t="南门" size={20} />
+          <circle cx="48" cy="48" r="24" fill="#27272a" stroke="#52525b" strokeWidth="3" />
+          <polygon points="48,28 56,50 48,45 40,50" fill="#f87171" />
+          <text x="48" y="68" textAnchor="middle" fontSize="16" fontWeight="700" fill="#d4d4d8">N</text>
+        </g>
+      </svg>
+    </div>
+  );
+}
+
+/* ------------------------------ 3. 三级抽屉：楼宇 → G–6 层 → 教室/商铺标签 ------------------------------ */
+function BuildingDrawer({ b, rec, patch, onClose }) {
+  const [floor, setFloor] = useState(null);
+  const [lvl, setLvl] = useState(1);
+  const [editing, setEditing] = useState(false);
+  const [openTag, setOpenTag] = useState("");
+  const [nt, setNt] = useState({ name: "", kind: "room" });
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const floors = rec.floors || {};
+  const tagsOf = (f) => floors[f] || [];
+  const total = FLOORS.reduce((n, f) => n + tagsOf(f).length, 0);
+  const hours = rec.hours !== undefined ? rec.hours : b.hours;
+  const tips = rec.tips !== undefined ? rec.tips : b.tips;
+  const edited = rec.hours !== undefined || rec.tips !== undefined || total > 0 || Object.keys(rec.fdesc || {}).length > 0;
+
+  const gather = (kind) => {
+    const out = [];
+    FLOORS.forEach((f) => tagsOf(f).forEach((t) => { if (t.kind === kind) out.push({ f: f, name: t.name, id: t.id }); }));
+    return out;
+  };
+  const study = gather("study");
+  const printers = gather("printer");
+  const micro = gather("microwave");
+  const fdesc = rec.fdesc || {};
+  const setFdesc = (f, v) => patch((r) => ({ ...r, fdesc: { ...(r.fdesc || {}), [f]: v } }));
+  const goFloor = (f) => { setFloor(f); setLvl(3); setOpenTag(""); };
+  const back = () => { if (lvl === 3) { setLvl(2); setFloor(null); setOpenTag(""); } else { setLvl(1); } };
+
+  const addTag = () => {
+    const name = nt.name.trim();
+    if (!name) { setErr("请输入标签名称，例如 A2-301 或 便利店"); return; }
+    setErr("");
+    const tag = { id: uid(), name: name.slice(0, 40), kind: nt.kind, note: "" };
+    patch((r) => ({ ...r, floors: { ...(r.floors || {}), [floor]: [...((r.floors && r.floors[floor]) || []), tag] } }));
+    setNt({ ...nt, name: "" });
+    setOpenTag(tag.id);
+  };
+  const updTag = (id, fields) => patch((r) => ({
+    ...r, floors: { ...(r.floors || {}), [floor]: ((r.floors && r.floors[floor]) || []).map((t) => (t.id === id ? { ...t, ...fields } : t)) },
+  }));
+  const delTag = (id) => {
+    patch((r) => ({ ...r, floors: { ...(r.floors || {}), [floor]: ((r.floors && r.floors[floor]) || []).filter((t) => t.id !== id) } }));
+    setOpenTag("");
+  };
+  const resetAll = () => { patch(() => ({})); setFloor(null); setLvl(1); setOpenTag(""); };
+
+  const cur = floor ? tagsOf(floor) : [];
+  const opened = cur.find((t) => t.id === openTag) || null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center" role="dialog" aria-modal="true" aria-label={b.zh + " 详情"}>
+      <button type="button" aria-label="关闭" onClick={onClose} className="absolute inset-0 bg-black/60" />
+      <div className="sheet relative z-10 flex max-h-[86%] w-full max-w-xl flex-col overflow-hidden rounded-t-3xl border border-zinc-700 bg-zinc-900"
+        style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
+        <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-zinc-600" />
+        <div className="flex items-start justify-between gap-3 px-4 pb-3 pt-2">
+          <div className="flex min-w-0 items-center gap-3">
+            {lvl > 1 ? (
+              <button type="button" onClick={back} aria-label="返回上一级"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-zinc-800 text-zinc-100 active:bg-zinc-700"><I.ChevronLeft size={22} /></button>
+            ) : (
+              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-zinc-800 text-2xl">{b.emoji}</span>
+            )}
+            <div className="min-w-0">
+              <h2 className="truncate text-lg font-bold text-zinc-50">{b.zh}</h2>
+              <p className="truncate text-xs text-zinc-400">{lvl === 3 && floor ? "楼宇 › 楼层 › " + floorLabel(floor) : lvl === 2 ? "楼宇 › 楼层概览" : b.en}</p>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <button type="button" onClick={() => setEditing(!editing)} aria-label="切换编辑模式" aria-pressed={editing}
+              className={"flex h-10 w-10 items-center justify-center rounded-lg border " + (editing ? "border-sky-400 bg-sky-400/15 text-sky-200" : "border-zinc-700 text-zinc-200")}><I.Pencil size={16} /></button>
+            <button type="button" onClick={onClose} aria-label="关闭"
+              className="flex h-10 w-10 items-center justify-center rounded-lg border border-zinc-700 text-zinc-200 active:bg-zinc-800"><I.X size={18} /></button>
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
+          {editing && <p className="mb-3 rounded-lg border border-sky-400/40 bg-sky-400/10 px-3 py-2 text-xs leading-relaxed text-sky-100">编辑模式已开启：改动即时保存在本机，可在地图卡片里导出 JSON 发给朋友。</p>}
+
+          {/* 三级：楼层标签 */}
+          {lvl === 3 && floor ? (
+            <div>
+              <div className="-mx-1 mb-3 flex gap-1.5 overflow-x-auto px-1 pb-1">
+                {FLOORS.map((f) => (
+                  <button key={f} type="button" onClick={() => goFloor(f)} aria-pressed={f === floor}
+                    className={"min-h-[40px] min-w-[44px] shrink-0 rounded-lg border px-3 text-sm font-semibold " +
+                      (f === floor ? "border-sky-400 bg-sky-400/20 text-sky-100" : "border-zinc-700 bg-zinc-950 text-zinc-300")}>{f}</button>
+                ))}
+              </div>
+              <h3 className="mb-1 text-sm font-semibold text-zinc-100">{floorLabel(floor)} · {cur.length} 个标签</h3>
+              {fdesc[floor] && <p className="mb-2 text-xs leading-relaxed text-zinc-400">{fdesc[floor]}</p>}
+              <button type="button" onClick={() => setEditing(!editing)} aria-pressed={editing}
+                className={"mb-3 flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-semibold " + (editing ? "border-sky-400 bg-sky-400/20 text-sky-100" : "border-sky-400/50 bg-sky-400/10 text-sky-200 active:bg-sky-400/20")}>
+                <I.Plus size={16} /> {editing ? "完成编辑" : "+ 添加设施"}
+              </button>
+              {cur.length === 0 ? (
+                <p className="rounded-xl border border-dashed border-zinc-700 p-4 text-sm leading-relaxed text-zinc-300">这一层还没有标签。点上方“+ 添加/编辑楼层标签”添加教室、商铺、打印机或微波炉，也可以让朋友导出 JSON 再导入。</p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {cur.map((t) => (
+                    <button key={t.id} type="button" onClick={() => setOpenTag(openTag === t.id ? "" : t.id)} aria-pressed={openTag === t.id}
+                      className={"min-h-[40px] rounded-lg border px-3 py-1.5 text-sm font-medium " + kindOf(t.kind).cls + (openTag === t.id ? " ring-2 ring-sky-400" : "")}>
+                      {t.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* 三级：标签详情 */}
+              {opened && (
+                <div className="mt-3 rounded-xl border border-zinc-700 bg-zinc-950 p-3">
+                  {editing ? (
+                    <div className="flex flex-col gap-2.5">
+                      <div>
+                        <label htmlFor="tag-edit-name" className={labelCls}>名称</label>
+                        <input id="tag-edit-name" type="text" value={opened.name} maxLength={40} onChange={(e) => updTag(opened.id, { name: e.target.value })} className={inputCls} />
+                      </div>
+                      <div>
+                        <label htmlFor="tag-edit-kind" className={labelCls}>类型</label>
+                        <select id="tag-edit-kind" value={opened.kind} onChange={(e) => updTag(opened.id, { kind: e.target.value })} className={inputCls}>
+                          {KINDS.map((k) => <option key={k.key} value={k.key}>{k.label}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label htmlFor="tag-edit-note" className={labelCls}>备注（开放时间、位置、价格等）</label>
+                        <textarea id="tag-edit-note" rows={2} maxLength={300} value={opened.note || ""} onChange={(e) => updTag(opened.id, { note: e.target.value })} className={inputCls + " text-sm"} />
+                      </div>
+                      <button type="button" onClick={() => delTag(opened.id)}
+                        className="inline-flex min-h-[40px] items-center justify-center gap-1.5 rounded-lg border border-red-400/50 px-3 py-2 text-sm font-semibold text-red-300 active:bg-red-400/10"><I.Trash size={15} /> 删除这个标签</button>
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="min-w-0 break-words text-base font-semibold text-zinc-50">{opened.name}</p>
+                        <span className={"shrink-0 rounded-md border px-2 py-0.5 text-xs font-medium " + kindOf(opened.kind).cls}>{kindOf(opened.kind).label}</span>
+                      </div>
+                      <p className="mt-1 text-xs text-zinc-400">{b.zh} · {floorLabel(floor)}</p>
+                      <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-zinc-200">{opened.note || "暂无备注。开启编辑模式可以补充。"}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {editing && (
+                <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                  <h4 className="mb-2 text-sm font-semibold text-zinc-100">在 {floorLabel(floor)} 添加标签</h4>
+                  <div className="grid grid-cols-[minmax(0,1fr)_7rem] gap-2">
+                    <div className="min-w-0">
+                      <label htmlFor="tag-name" className={labelCls}>名称</label>
+                      <input id="tag-name" type="text" maxLength={40} value={nt.name} onChange={(e) => setNt({ ...nt, name: e.target.value })}
+                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addTag(); } }} className={inputCls} placeholder="A2-301 / 便利店" />
+                    </div>
+                    <div className="min-w-0">
+                      <label htmlFor="tag-kind" className={labelCls}>类型</label>
+                      <select id="tag-kind" value={nt.kind} onChange={(e) => setNt({ ...nt, kind: e.target.value })} className={inputCls}>
+                        {KINDS.map((k) => <option key={k.key} value={k.key}>{k.label}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  {err && <p className="mt-2 text-sm text-red-300" role="alert">{err}</p>}
+                  <button type="button" onClick={addTag} className="mt-3 flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-sky-400 px-4 py-2.5 text-sm font-semibold text-zinc-950 active:bg-sky-300"><I.Plus size={16} /> 添加标签</button>
+                </div>
+              )}
+            </div>
+          ) : lvl === 2 ? (
+            /* 二级：G–6 楼层概览 */
+            <div>
+              <h3 className="mb-2 text-sm font-semibold text-zinc-100">楼层概览（G – 6）</h3>
+              <ul className="flex flex-col gap-2">
+                {FLOORS.map((f) => {
+                  const n = tagsOf(f).length;
+                  const kinds = {};
+                  tagsOf(f).forEach((t) => { kinds[t.kind] = (kinds[t.kind] || 0) + 1; });
+                  return (
+                    <li key={f} className="rounded-xl border border-zinc-800 bg-zinc-950">
+                      <button type="button" onClick={() => goFloor(f)} aria-label={"查看 " + floorLabel(f) + " 标签"}
+                        className="flex min-h-[56px] w-full items-center gap-3 px-3 py-2 text-left active:bg-zinc-900">
+                        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-zinc-800 text-base font-bold text-zinc-50">{f}</span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm leading-snug text-zinc-100">{fdesc[f] || "暂无描述，等你补充"}</span>
+                          <span className={"block text-[11px] " + (n ? "text-sky-300" : "text-zinc-500")}>{n ? n + " 个标签：" + Object.keys(kinds).map((k) => kindOf(k).label + kinds[k]).join(" · ") : "暂无标签"}</span>
+                        </span>
+                        <span className="shrink-0 text-zinc-500">›</span>
+                      </button>
+                      {editing && (
+                        <div className="border-t border-zinc-800 px-3 py-2">
+                          <label htmlFor={"fd-" + f} className={labelCls}>{floorLabel(f)} 简短描述</label>
+                          <input id={"fd-" + f} type="text" maxLength={120} value={fdesc[f] || ""} onChange={(e) => setFdesc(f, e.target.value)} className={inputCls} placeholder="例如：大厅、咨询台、便利店" />
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ) : (
+            /* 一级：楼宇详情 */
+            <div>
+              <p className={"mb-3 rounded-lg px-3 py-2 text-xs leading-relaxed " + (edited ? "border border-emerald-400/30 bg-emerald-400/5 text-emerald-200" : "border border-amber-400/30 bg-amber-400/5 text-amber-200")}>
+                {edited ? "已包含你或朋友补充的信息。" : "开放时间仅供参考，以现场公告为准。点右上角铅笔，可以补充开放时间、设施和楼层标签。"}
+              </p>
+
+              <ul className="flex flex-col gap-2.5">
+                <li className="rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                  <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-sky-300"><I.Clock size={14} /> 开放时间</p>
+                  {editing ? <textarea id="bf-hours" aria-label="开放时间" rows={2} maxLength={200} value={hours} onChange={(e) => patch((r) => ({ ...r, hours: e.target.value }))} className={inputCls + " text-sm"} />
+                    : <p className="text-sm leading-relaxed text-zinc-100">{hours || "暂无"}</p>}
+                </li>
+                <li className="rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                  <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-sky-300"><I.Info size={14} /> 设施贴士</p>
+                  {editing ? <textarea id="bf-tips" aria-label="设施贴士" rows={2} maxLength={400} value={tips} onChange={(e) => patch((r) => ({ ...r, tips: e.target.value }))} className={inputCls + " text-sm"} />
+                    : <p className="text-sm leading-relaxed text-zinc-100">{tips || "暂无"}</p>}
+                </li>
+                <li className="rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                  <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-violet-300"><I.Book size={14} /> 自习室分布</p>
+                  <p className="text-sm leading-relaxed text-zinc-100">{study.length ? study.map((s) => floorLabel(s.f) + " " + s.name).join("、") : "还没有标注。进入楼层，添加“自习室”类型的标签。"}</p>
+                </li>
+                <li className="rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                  <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-amber-300">♨ 微波炉位置</p>
+                  <p className="text-sm leading-relaxed text-zinc-100">{micro.length ? micro.map((s) => floorLabel(s.f) + " " + s.name).join("、") : "还没有标注。进入楼层，添加“微波炉”类型的标签。"}</p>
+                </li>
+                <li className="rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                  <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-emerald-300"><I.Printer size={14} /> 打印机位置</p>
+                  <p className="text-sm leading-relaxed text-zinc-100">{printers.length ? printers.map((s) => floorLabel(s.f) + " " + s.name).join("、") : "还没有标注。进入楼层，添加“打印机”类型的标签。"}</p>
+                </li>
+              </ul>
+
+              <button type="button" onClick={() => setLvl(2)}
+                className="mt-4 flex min-h-[48px] w-full items-center justify-between rounded-xl bg-sky-400 px-4 py-2.5 text-sm font-semibold text-zinc-950 active:bg-sky-300">
+                <span>查看楼层概览 G – 6（{total} 个标签）</span><span aria-hidden="true">›</span>
+              </button>
+            </div>
+          )}
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            <a href={"https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent("Xiamen University Malaysia " + b.en)} target="_blank" rel="noopener noreferrer"
+              className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-100 active:bg-zinc-800">
+              在 Google Maps 搜索 <I.Ext size={14} />
+            </a>
+            {edited && editing && lvl === 1 && (
+              <button type="button" onClick={resetAll}
+                className="inline-flex min-h-[40px] items-center rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-300 active:bg-zinc-800">恢复本楼默认信息</button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CampusMapCard({ selected, onPick, data, onExport, onImport, exportState }) {
+  const n = countTags(data);
+  return (
+    <Card>
+      <CardTitle icon={<I.MapPin size={18} />} title="校园交互地图" tone="bg-sky-400/15 text-sky-300"
+        right={<span className="tnum shrink-0 rounded-full border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-300">已标注 {n}</span>} />
+      <div className="mb-3 grid grid-cols-2 gap-2">
+        <button type="button" onClick={onExport}
+          className="flex min-h-[50px] items-center justify-center gap-1.5 rounded-xl border border-emerald-400 bg-emerald-400 px-2 py-2.5 text-sm font-bold text-zinc-950 active:bg-emerald-300">
+          {exportState === "ok" ? "✅ 已复制" : exportState === "fail" ? "⚠️ 请在弹窗里复制" : "📤 导出并复制地图 JSON"}
+        </button>
+        <button type="button" onClick={onImport}
+          className="flex min-h-[46px] items-center justify-center gap-1.5 rounded-xl border border-sky-400/50 bg-sky-400/10 px-2 py-2.5 text-sm font-semibold text-sky-200 active:bg-sky-400/20">
+          📥 导入合并 JSON
+        </button>
+      </div>
+      <p className="mb-2 text-xs leading-relaxed text-zinc-400">按真实方位排布的 Q 版沙盘。点任意建筑：楼宇 → G–6 楼层概览 → 楼层标签；内测朋友可在手机上直接填报，再导出 JSON 发给开发者。</p>
+      <CampusMap selected={selected} onPick={onPick} />
+      {exportState === "ok" && (
+        <div className="fixed inset-x-0 z-[70] flex justify-center px-4" style={{ bottom: "calc(20px + env(safe-area-inset-bottom, 0px))" }} role="alertdialog" aria-label="已复制">
+          <div className="sheet flex w-full max-w-md items-center gap-3 rounded-2xl border border-emerald-400/60 bg-zinc-900 px-4 py-3 shadow-lg">
+            <span className="text-xl" aria-hidden="true">✅</span>
+            <p className="text-sm font-semibold leading-snug text-zinc-50">已复制配置！请直接微信粘贴发给开发者</p>
+          </div>
+        </div>
+      )}
+      <a href={MAPS_URL} target="_blank" rel="noopener noreferrer"
+        className="mt-3 flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-zinc-700 px-3 py-2.5 text-sm font-semibold text-zinc-100 active:bg-zinc-800">
+        Google Maps 看马校全景 <I.Ext size={15} />
+      </a>
+    </Card>
+  );
+}
+/* ------------------------------ 7. 底部 ------------------------------ */
+function BobaModal({ onClose }) {
+  const [cheers, setCheers] = useLocalState("xmum_boba_cheers", 0);
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4" role="dialog" aria-modal="true" aria-label="请开发者喝奶茶">
+      <button type="button" aria-label="关闭" onClick={onClose} className="absolute inset-0 bg-black/70" />
+      <div className="sheet relative z-10 w-full max-w-sm rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-pink-400/15 text-pink-300"><I.Coffee size={18} /></span>
+            <h2 className="text-lg font-semibold text-zinc-50">请开发者喝奶茶</h2>
+          </div>
+          <button type="button" onClick={onClose} aria-label="关闭"
+            className="flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-700 text-zinc-200 active:bg-zinc-800"><I.X size={16} /></button>
+        </div>
+        <p className="mt-3 text-sm leading-relaxed text-zinc-300">
+          XMUM 校园助手完全免费，所有数据只保存在你的浏览器里。如果它帮你省了时间，送一杯“云奶茶”或者给项目点个 Star，就是最好的鼓励。
+        </p>
+        <div className="mt-4 flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3">
+          <span className="text-sm text-zinc-300">奶茶心意（本机计数）</span>
+          <span className="tnum text-2xl font-semibold text-pink-300">{cheers}</span>
+        </div>
+        <button type="button" onClick={() => setCheers(cheers + 1)}
+          className="mt-3 flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-pink-400 px-4 py-3 text-base font-semibold text-zinc-950 active:bg-pink-300">
+          <I.Coffee size={18} /> 送上一杯奶茶
+        </button>
+        <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer"
+          className="mt-2 flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-zinc-700 px-4 py-2.5 text-sm font-medium text-zinc-100 active:bg-zinc-800">
+          <I.Github size={16} /> 去 GitHub 点 Star
+        </a>
+      </div>
+    </div>
+  );
+}
+
+function Footer({ onBoba }) {
+  return (
+    <footer className="mt-6 flex flex-col items-center gap-3 border-t border-zinc-800 pt-5 text-center">
+      <div className="flex flex-wrap items-center justify-center gap-3">
+        <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer" aria-label="XMUM 校园助手 GitHub 开源地址"
+          className="inline-flex overflow-hidden rounded-md border border-zinc-700 text-xs font-medium">
+          <span className="flex items-center gap-1.5 bg-zinc-800 px-2.5 py-1.5 text-zinc-100"><I.Github size={14} /> GitHub</span>
+          <span className="bg-emerald-500 px-2.5 py-1.5 text-zinc-950">开源</span>
+        </a>
+        <span className="rounded-full border border-zinc-700 bg-zinc-800 px-2 py-1 text-[11px] font-medium text-zinc-300">v1.0 MVP</span>
+        <button type="button" onClick={onBoba}
+          className="inline-flex min-h-[36px] items-center gap-2 rounded-md border border-pink-400/50 bg-pink-400/10 px-3 py-1.5 text-xs font-semibold text-pink-300 active:bg-pink-400/20">
+          <I.Coffee size={14} /> 请开发者喝奶茶
+        </button>
+      </div>
+      <p className="max-w-sm text-xs leading-relaxed text-zinc-400">
+        开源的同学自制小工具，欢迎在 GitHub 提 Issue 与 PR。非官方项目，与厦门大学马来西亚分校无隶属关系，数据仅保存在本机浏览器。
+      </p>
+    </footer>
+  );
+}
+
+
+/* ------------------------------ 应用入口 ------------------------------ */
+function App() {
+  const [now, setNow] = useState(() => new Date());
+  const [online, setOnline] = useState(() => (typeof navigator !== "undefined" && "onLine" in navigator ? navigator.onLine : true));
+  const [courses, setCourses] = useLocalState("xmum_courses_v2", SAMPLE_COURSES);
+  const [customized, setCustomized] = useLocalState("xmum_courses_custom_v2", false);
+  const [calStored, setCal] = useLocalState("xmum_calendar_v1", CAL_DEFAULT);
+  const cal = { ...CAL_DEFAULT, ...calStored };
+  const [myRoom, setMyRoom] = useLocalState("xmum_my_room", legacyRoom());
+  const [attendDefault, setAttendDefault] = useLocalState("xmum_attend_default", "");
+  const [mapData, setMapData] = useLocalState("xmum_map_v3", {});
+  const [panel, setPanel] = useState(""); /* "", "import", "manage", "mapdata", "boba" */
+  const [bldg, setBldg] = useState("");
+  const [toast, setToast] = useState(null);
+  const [exportState, setExportState] = useState("");
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    const up = () => setOnline(true);
+    const down = () => setOnline(false);
+    window.addEventListener("online", up);
+    window.addEventListener("offline", down);
+    return () => { window.removeEventListener("online", up); window.removeEventListener("offline", down); };
+  }, []);
+
+  useEffect(() => {
+    if (!toast) return undefined;
+    const id = setTimeout(() => setToast(null), 9000);
+    return () => clearTimeout(id);
+  }, [toast]);
+
+  const markCustom = useCallback(() => setCustomized(true), [setCustomized]);
+  const close = useCallback(() => setPanel(""), []);
+  const closeBldg = useCallback(() => setBldg(""), []);
+
+  const build = (items, base) => {
+    const links = {};
+    courses.forEach((c) => { links[c.name] = { a: c.attendUrl || "", m: c.moodleUrl || "" }; });
+    return items.map((it) => ({
+      id: uid(), day: it.day, start: it.start, end: it.end, name: it.name, room: it.room || "",
+      weeks: it.weeks || "", teacher: it.teacher || "", attendUrl: (links[it.name] || {}).a || "", moodleUrl: (links[it.name] || {}).m || "",
+    }));
+  };
+
+  /* 粘贴文本导入：可追加或替换 */
+  const applyImport = (items, mode) => {
+    const made = build(items);
+    if (mode === "replace") {
+      setCourses(made);
+    } else {
+      const have = {};
+      courses.forEach((c) => { have[c.name + "|" + c.day + "|" + c.start + "|" + c.end] = true; });
+      setCourses([...courses, ...made.filter((c) => !have[c.name + "|" + c.day + "|" + c.start + "|" + c.end])]);
+    }
+    setCustomized(true);
+    setPanel("manage");
+  };
+
+  /* HTML 文件导入：识别成功后自动保存并替换，可撤销 */
+  const applyFile = (items, fileName, skipped) => {
+    const backup = courses;
+    const backupCustom = customized;
+    setCourses(build(items));
+    setCustomized(true);
+    setPanel("");
+    setToast({ msg: "已从 " + fileName + " 导入 " + items.length + " 个时段" + (skipped ? "（另有 " + skipped + " 处提示，详见控制台）" : ""), backup: backup, backupCustom: backupCustom });
+  };
+
+  const undo = () => {
+    if (!toast) return;
+    setCourses(toast.backup);
+    setCustomized(toast.backupCustom);
+    setToast(null);
+  };
+
+  const exportNow = async () => {
+    const ok = await copyText(exportMapJson(mapData));
+    if (ok) {
+      setExportState("ok");
+      setTimeout(() => setExportState(""), 4500);
+    } else {
+      setExportState("fail");
+      setPanel("mapdata");
+    }
+  };
+
+  const selected = BUILDINGS.find((b) => b.id === bldg) || null;
+
+  return (
+    <div className="mx-auto w-full max-w-xl text-zinc-100">
+      <Header now={now} online={online} />
+      <DormBar room={myRoom || ""} setRoom={setMyRoom} />
+      <ServiceHall myRoom={myRoom || ""} />
+      <main className="flex flex-col gap-3">
+        <CourseCard attendDefault={attendDefault} now={now} cal={cal} onCal={() => setPanel("calendar")} onFull={() => setPanel("fulltt")} courses={courses} customized={customized} onImport={() => setPanel("import")} onManage={() => setPanel("manage")} />
+        <CampusMapCard selected={bldg} onPick={setBldg} data={mapData} onExport={exportNow} onImport={() => setPanel("mapdata")} exportState={exportState} />
+        <ElectricityCard myRoom={myRoom || ""} onEditRoom={() => { const el = document.getElementById("my-room-input"); if (el) { el.scrollIntoView({ block: "center", behavior: "smooth" }); el.focus(); } }} />
+        <TransitCard now={now} />
+      </main>
+      <Footer onBoba={() => setPanel("boba")} />
+
+      {panel === "import" && <ImportModal customized={customized} onApply={applyImport} onFileApply={applyFile} onManual={() => setPanel("manage")} onClose={close} />}
+      {panel === "manage" && <ManageDrawer attendDefault={attendDefault} setAttendDefault={setAttendDefault} courses={courses} setCourses={setCourses} markCustom={markCustom} onClose={close} />}
+      {panel === "fulltt" && <FullTimetable now={now} cal={cal} courses={courses} onClose={close} onImport={() => setPanel("import")} />}
+      {panel === "calendar" && <CalendarModal cal={cal} setCal={setCal} now={now} onClose={close} />}
+      {panel === "boba" && <BobaModal onClose={close} />}
+      {panel === "mapdata" && <MapDataModal data={mapData} setData={setMapData} onClose={close} />}
+      {selected && (
+        <BuildingDrawer key={selected.id} b={selected} rec={mapData[selected.id] || {}}
+          patch={(fn) => setMapData((prev) => {
+            const nextRec = fn(prev[selected.id] || {});
+            const next = { ...prev };
+            if (nextRec && Object.keys(nextRec).length) next[selected.id] = nextRec; else delete next[selected.id];
+            return next;
+          })}
+          onClose={closeBldg} />
+      )}
+
+      {toast && (
+        <div className="fixed inset-x-0 z-[60] flex justify-center px-4" style={{ bottom: "calc(16px + env(safe-area-inset-bottom, 0px))" }} role="status">
+          <div className="sheet flex w-full max-w-md items-center justify-between gap-3 rounded-2xl border border-emerald-400/50 bg-zinc-900 px-4 py-3 shadow-lg">
+            <span className="flex min-w-0 items-center gap-2 text-sm text-zinc-50"><I.Check size={18} className="shrink-0 text-emerald-300" /><span className="break-words">{toast.msg}</span></span>
+            <button type="button" onClick={undo}
+              className="inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-lg border border-zinc-600 px-3 py-1.5 text-sm font-semibold text-zinc-100 active:bg-zinc-800"><I.Undo size={14} /> 撤销</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+
+</body>
+</html>
