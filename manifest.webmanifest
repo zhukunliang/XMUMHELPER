@@ -1,0 +1,15 @@
+{
+  "name": "XMUM 校园助手",
+  "short_name": "XMUM Helper",
+  "description": "厦大马校学生的课表、地图、电费、汇率与生活工具箱",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#021a14",
+  "theme_color": "#022c22",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
